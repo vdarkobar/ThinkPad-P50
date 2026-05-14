@@ -10,7 +10,7 @@ Lenovo  ThinkPad P50 Workstation setup and maintenance
 
 
 <details>
-  <summary>*Post-install script Debian 13*</summary>
+  <summary>Post-install script Debian 13</summary>
   <p>Run on a clean Debian installation:</p>
   <pre><code>tmp="$(mktemp)" &amp;&amp; curl -fsSL https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/main/post-install-deb.sh -o "$tmp" &amp;&amp; sudo bash "$tmp"; rm -f "$tmp"</code></pre>
 </details>
