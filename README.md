@@ -18,5 +18,5 @@ Lenovo  ThinkPad P50 Workstation setup and maintenance
 <details>
   <summary>Fingerprint setup Debian 13</summary>
   <p>Initializing and enabling the Validity/Synaptics VFS7500 fingerprint reader:</p>
-  <pre><code>tmp="$(mktemp)" &amp;&amp; curl -fsSL https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/refs/heads/main/fingerprint-deb.sh -o "$tmp" &amp;&amp; sudo bash "$tmp"; rm -f "$tmp"</code></pre>
+  <pre><code>tmp="$(mktemp)" &amp;&amp; curl -fsSL https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/main/fingerprint-deb.sh -o "$tmp" &amp;&amp; sudo bash "$tmp"; rm -f "$tmp"</code></pre>
 </details>
