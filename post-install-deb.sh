@@ -29,7 +29,7 @@ FLATPAK_APPS=(
     com.mattjakeman.ExtensionManager
     io.missioncenter.MissionCenter
     com.github.tchx84.Flatseal
-    org.gnome.Secrets
+    org.gnome.World.Secrets
     # org.gimp.GIMP
     # org.inkscape.Inkscape
     # com.obsproject.Studio
