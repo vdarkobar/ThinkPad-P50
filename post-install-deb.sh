@@ -95,7 +95,7 @@ APT_OPTS=(
 
 DEB822_SRC="/etc/apt/sources.list.d/debian.sources"
 LEGACY_SRC="/etc/apt/sources.list"
-MS_KEY_FINGERPRINT="EB3E94ADBE1229CF5C299C9984A88C5622A075CC"
+MS_KEY_FINGERPRINT="BC528686B50D79E339D3721CEB3E94ADBE1229CF"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { printf '\n\e[1;34m──\e[0m %s\n' "$*"; }
@@ -335,17 +335,18 @@ EOFNR
 configure_vscode_repo() {
     info "Configuring Microsoft VS Code APT repository"
 
-    local tmp_asc tmp_key got_fp
+    local tmp_asc tmp_key got_fps
     tmp_asc="$(mktemp)"
     tmp_key="$(mktemp)"
 
     wget -qO "$tmp_asc" https://packages.microsoft.com/keys/microsoft.asc
 
-    got_fp="$(gpg --show-keys --with-colons "$tmp_asc" 2>/dev/null \
-        | awk -F: '/^fpr:/ {print $10; exit}')"
+    got_fps="$(gpg --show-keys --with-colons "$tmp_asc" 2>/dev/null \
+        | awk -F: '/^fpr:/ {print $10}')"
 
-    [[ "$got_fp" == "$MS_KEY_FINGERPRINT" ]] || \
-        die "Microsoft GPG key fingerprint mismatch (got: ${got_fp:-none})"
+    if ! grep -qxF "$MS_KEY_FINGERPRINT" <<<"$got_fps"; then
+        die "Microsoft GPG key fingerprint mismatch (got: ${got_fps//$'\n'/, })"
+    fi
 
     gpg --dearmor < "$tmp_asc" > "$tmp_key"
     sudo install -D -o root -g root -m 0644 "$tmp_key" /usr/share/keyrings/microsoft.gpg
