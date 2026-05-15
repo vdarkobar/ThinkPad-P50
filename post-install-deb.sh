@@ -82,7 +82,7 @@ BASE_PACKAGES=(
     seahorse
     pavucontrol
     needrestart
-    tldr
+    tealdeer
     apparmor-utils
 )
 
