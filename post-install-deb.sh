@@ -177,10 +177,31 @@ prepare_gsettings_environment() {
         unset GSETTINGS_SCHEMA_DIR
     fi
 
+    # GLib also locates compiled schemas through XDG_DATA_DIRS. If this was
+    # inherited from a restricted runtime and does not include /usr/share,
+    # gsettings cannot see normal GNOME schemas such as org.gnome.desktop.interface.
+    case ":${XDG_DATA_DIRS:-}:" in
+        *:/usr/share:* ) ;;
+        "::")
+            export XDG_DATA_DIRS="/usr/local/share:/usr/share"
+            warn "Set XDG_DATA_DIRS for host GNOME settings: $XDG_DATA_DIRS"
+            ;;
+        *)
+            export XDG_DATA_DIRS="/usr/local/share:/usr/share:$XDG_DATA_DIRS"
+            warn "Prepended system data dirs for host GNOME settings: $XDG_DATA_DIRS"
+            ;;
+    esac
+
     # Normally package triggers maintain this, but compiling explicitly is cheap
     # and avoids stale schema-cache edge cases after a large first-run install.
     if command -v glib-compile-schemas >/dev/null 2>&1 && [[ -d /usr/share/glib-2.0/schemas ]]; then
-        sudo glib-compile-schemas /usr/share/glib-2.0/schemas >/dev/null 2>&1 ||             warn "Could not refresh system GSettings schema cache"
+        sudo glib-compile-schemas /usr/share/glib-2.0/schemas >/dev/null 2>&1 || \
+            warn "Could not refresh system GSettings schema cache"
+    fi
+
+    if ! gsettings list-schemas 2>/dev/null | grep -Fxq org.gnome.desktop.interface; then
+        warn "Host GNOME schemas are still not visible to gsettings; skipping unavailable settings below"
+        warn "Current XDG_DATA_DIRS=${XDG_DATA_DIRS:-unset}"
     fi
 }
 
