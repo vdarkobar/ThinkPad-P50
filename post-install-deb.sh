@@ -176,6 +176,10 @@ defaultPref("identity.fxaccounts.enabled", true);
 // Home page URL
 defaultPref("browser.startup.homepage", "https://start.duckduckgo.com");
 
+// Follow system light/dark theme automatically
+defaultPref("extensions.activeThemeID", "default-theme@mozilla.org");
+defaultPref("layout.css.prefers-color-scheme.content-override", 2);
+
 // Restore previous windows and tabs on normal startup
 defaultPref("browser.startup.page", 3);
 
