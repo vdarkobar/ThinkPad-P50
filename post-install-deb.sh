@@ -279,12 +279,15 @@ printf '  Flatpaks  : %d installed, %d skipped, %d failed\n' \
     "$FLATPAK_INSTALLED" "$FLATPAK_SKIPPED" "$FLATPAK_FAILED"
 printf '\n'
 printf '  Next steps:\n'
-printf '  • Log out and back in for .bashrc + GNOME changes to fully take effect\n'
-printf '  • Reboot recommended to apply kernel/firmware upgrades:\n'
-printf '      sudo reboot\n'
-printf '  • Create your first Distrobox:\n'
+printf '  • Log back in after reboot for .bashrc + GNOME changes to fully take effect\n'
+printf '  • Create your first Distrobox after reboot:\n'
 printf '      distrobox create --name deb-1 --image debian:bookworm\n'
+printf '  • System will reboot automatically now.\n'
 printf '  ────────────────────────────────────────\n'
 printf '\n'
 
-# Reboot is intentionally not automatic.
+# ── Mandatory reboot ──────────────────────────────────────────────────────────
+info "Mandatory reboot"
+warn "System will reboot now to apply kernel, firmware, Flatpak, GNOME, and package changes."
+sync
+sudo systemctl reboot
