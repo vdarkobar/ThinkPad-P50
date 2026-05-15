@@ -173,6 +173,12 @@ if flatpak info --system io.gitlab.librewolf-community &>/dev/null; then
 // Enable Firefox Sync
 defaultPref("identity.fxaccounts.enabled", true);
 
+// Home button URL
+defaultPref("browser.startup.homepage", "https://start.duckduckgo.com");
+
+// Show Home button in the navigation toolbar
+defaultPref("browser.uiCustomization.state", "{\"placements\":{\"widget-overflow-fixed-list\":[],\"unified-extensions-area\":[],\"nav-bar\":[\"back-button\",\"forward-button\",\"stop-reload-button\",\"home-button\",\"urlbar-container\",\"downloads-button\",\"unified-extensions-button\"],\"toolbar-menubar\":[\"menubar-items\"],\"TabsToolbar\":[\"tabbrowser-tabs\",\"new-tab-button\",\"alltabs-button\"],\"PersonalToolbar\":[\"personal-bookmarks\"]},\"seen\":[\"home-button\"],\"dirtyAreaCache\":[\"nav-bar\",\"TabsToolbar\",\"toolbar-menubar\",\"PersonalToolbar\"],\"currentVersion\":20}");
+
 // Preserve browsing and download history
 defaultPref("privacy.clearOnShutdown.history", false);
 defaultPref("privacy.clearOnShutdown.downloads", false);
