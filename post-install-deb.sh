@@ -298,6 +298,8 @@ else
             TERM_SCHEMA="org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${TERM_PROFILE}/"
             gsettings set "$TERM_SCHEMA" use-system-font false
             gsettings set "$TERM_SCHEMA" font 'JetBrains Mono 12'
+            gsettings set "$TERM_SCHEMA" default-size-columns 120
+            gsettings set "$TERM_SCHEMA" default-size-rows 31
         else
             warn "Could not detect GNOME Terminal profile — skipping terminal font setting"
         fi
