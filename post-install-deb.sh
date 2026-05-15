@@ -180,21 +180,33 @@ defaultPref("browser.startup.homepage", "https://start.duckduckgo.com");
 defaultPref("extensions.activeThemeID", "default-theme@mozilla.org");
 defaultPref("layout.css.prefers-color-scheme.content-override", 2);
 
+// Show Home button in the navigation toolbar
+// NOTE: This sets the toolbar layout for fresh/default profiles.
+defaultPref("browser.uiCustomization.state", "{\"placements\":{\"widget-overflow-fixed-list\":[],\"unified-extensions-area\":[],\"nav-bar\":[\"back-button\",\"forward-button\",\"stop-reload-button\",\"home-button\",\"urlbar-container\",\"downloads-button\",\"unified-extensions-button\"],\"toolbar-menubar\":[\"menubar-items\"],\"TabsToolbar\":[\"tabbrowser-tabs\",\"new-tab-button\",\"alltabs-button\"],\"PersonalToolbar\":[\"personal-bookmarks\"]},\"seen\":[\"home-button\"],\"dirtyAreaCache\":[\"nav-bar\",\"TabsToolbar\",\"toolbar-menubar\",\"PersonalToolbar\"],\"currentVersion\":20}");
+
 // Restore previous windows and tabs on normal startup
-defaultPref("browser.startup.page", 3);
+pref("browser.startup.page", 3);
 
 // Restore previous session after crash
-defaultPref("browser.sessionstore.resume_from_crash", true);
+pref("browser.sessionstore.resume_from_crash", true);
+
+// Do NOT clear private data on shutdown
+pref("privacy.sanitize.sanitizeOnShutdown", false);
+
+// Preserve cookies, site data, and login sessions across browser restarts
+pref("privacy.clearOnShutdown_v2.cookiesAndStorage", false);
+pref("privacy.clearOnShutdown.cookies", false);
+pref("privacy.clearOnShutdown.sessions", false);
+pref("privacy.clearOnShutdown.offlineApps", false);
+pref("network.cookie.lifetimePolicy", 0);
 
 // Preserve browsing and download history
-defaultPref("privacy.clearOnShutdown.history", false);
-defaultPref("privacy.clearOnShutdown.downloads", false);
+pref("privacy.clearOnShutdown.history", false);
+pref("privacy.clearOnShutdown.downloads", false);
 
-// Preserve login/session data across browser restarts
-defaultPref("privacy.clearOnShutdown.cookies", false);
-defaultPref("privacy.clearOnShutdown.sessions", false);
-defaultPref("privacy.clearOnShutdown.offlineApps", false);
-defaultPref("network.cookie.lifetimePolicy", 0);
+// Preserve more session restore data
+// 0 = save all session data; 1 = save only first-party session data.
+pref("browser.sessionstore.privacy_level", 1);
 
 // Enable middle-click autoscroll, but prevent middle-click paste
 defaultPref("middlemouse.paste", false);
@@ -202,10 +214,6 @@ defaultPref("general.autoScroll", true);
 
 // Use a stricter autoplay policy
 defaultPref("media.autoplay.blocking_policy", 2);
-
-// Show Home button in the navigation toolbar
-// NOTE: This sets the toolbar layout for fresh/default profiles.
-defaultPref("browser.uiCustomization.state", "{\"placements\":{\"widget-overflow-fixed-list\":[],\"unified-extensions-area\":[],\"nav-bar\":[\"back-button\",\"forward-button\",\"stop-reload-button\",\"home-button\",\"urlbar-container\",\"downloads-button\",\"unified-extensions-button\"],\"toolbar-menubar\":[\"menubar-items\"],\"TabsToolbar\":[\"tabbrowser-tabs\",\"new-tab-button\",\"alltabs-button\"],\"PersonalToolbar\":[\"personal-bookmarks\"]},\"seen\":[\"home-button\"],\"dirtyAreaCache\":[\"nav-bar\",\"TabsToolbar\",\"toolbar-menubar\",\"PersonalToolbar\"],\"currentVersion\":20}");
 
 // Keep WebGL disabled by default for privacy/fingerprinting resistance.
 // Uncomment only if needed for specific websites.
