@@ -65,6 +65,16 @@ BASE_PACKAGES=(
     rsync
     unzip
     jq
+    fwupd
+    gnome-firmware
+    firmware-linux-nonfree
+    intel-microcode
+    plocate
+    seahorse
+    pavucontrol
+    needrestart
+    tldr
+    apparmor-utils
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -95,6 +105,17 @@ fi
 command -v sudo >/dev/null 2>&1 || die "sudo is missing."
 command -v apt-get >/dev/null 2>&1 || die "apt-get is missing. This script is intended for Debian."
 command -v gsettings >/dev/null 2>&1 || warn "gsettings not found yet; GNOME settings may fail until packages are installed."
+
+# ── APT sources: enable contrib/non-free ──────────────────────────────────────
+info "Checking APT sources"
+
+if grep -Eq '^deb(-src)? .* main non-free-firmware' /etc/apt/sources.list; then
+    sudo cp /etc/apt/sources.list "/etc/apt/sources.list.bak.$(date +%Y%m%d-%H%M%S)"
+    sudo sed -i -E '/^deb(-src)? / s/\bmain[[:space:]]+non-free-firmware\b/main contrib non-free non-free-firmware/' /etc/apt/sources.list
+    success "Enabled contrib and non-free APT sections"
+else
+    warn "APT sources do not match expected Debian 13 layout or are already changed — skipping sources.list edit"
+fi
 
 # ── System update ─────────────────────────────────────────────────────────────
 info "System update"
