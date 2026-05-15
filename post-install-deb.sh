@@ -5,6 +5,8 @@
 # Run from an active GNOME Terminal as your normal user.
 # Do NOT run this script with sudo.
 #
+# Uses set -u intentionally; use ${VAR:-} for optional environment variables.
+#
 # One-liner:
 #   tmp="$(mktemp)" && wget -qO "$tmp" "https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/main/post-install-deb.sh" && bash "$tmp"; rc=$?; rm -f "$tmp"; (exit "$rc")
 #
@@ -38,12 +40,10 @@ FLATPAK_APPS=(
 )
 
 # APT packages
+# ca-certificates, wget, and gpg are installed earlier as repository prerequisites.
 BASE_PACKAGES=(
     timeshift
-    ca-certificates
     curl
-    wget
-    gpg
     git
     code
     btop
@@ -84,11 +84,30 @@ BASE_PACKAGES=(
     apparmor-utils
 )
 
+# APT should not stop for conffile prompts or package frontends.
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS=(
+    -o Dpkg::Options::=--force-confdef
+    -o Dpkg::Options::=--force-confold
+)
+
+DEB822_SRC="/etc/apt/sources.list.d/debian.sources"
+LEGACY_SRC="/etc/apt/sources.list"
+MS_KEY_FINGERPRINT="EB3E94ADBE1229CF5C299C9984A88C5622A075CC"
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { printf '\n\e[1;34m──\e[0m %s\n' "$*"; }
 success() { printf '\e[1;32m✓\e[0m %s\n' "$*"; }
 warn()    { printf '\e[1;33m!\e[0m %s\n' "$*"; }
 die()     { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+apt_update() {
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+}
+
+apt_run() {
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" "$@"
+}
 
 gset() {
     local schema="$1"
@@ -119,15 +138,194 @@ gset_path() {
     fi
 }
 
+enable_contrib_nonfree_deb822() {
+    [[ -f "$DEB822_SRC" ]] || return 1
+
+    local tmp rc
+    tmp="$(mktemp)"
+
+    if awk '
+function has(a, n, v, i) {
+    for (i = 1; i <= n; i++) if (a[i] == v) return 1
+    return 0
+}
+BEGIN { found = 0; changed = 0 }
+/^Components:/ {
+    delete comps
+    n = 0
+    for (i = 2; i <= NF; i++) comps[++n] = $i
+
+    if (has(comps, n, "main") && has(comps, n, "non-free-firmware")) {
+        found = 1
+        out = "Components:"
+        for (i = 1; i <= n; i++) {
+            out = out " " comps[i]
+            if (comps[i] == "main") {
+                if (!has(comps, n, "contrib"))  { out = out " contrib";  changed = 1 }
+                if (!has(comps, n, "non-free")) { out = out " non-free"; changed = 1 }
+            }
+        }
+        print out
+        next
+    }
+}
+{ print }
+END {
+    if (!found) exit 2
+    if (!changed) exit 1
+    exit 0
+}
+' "$DEB822_SRC" > "$tmp"; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    case "$rc" in
+        0)
+            sudo cp -a "$DEB822_SRC" "${DEB822_SRC}.bak.$(date +%Y%m%d-%H%M%S)"
+            sudo install -o root -g root -m 0644 "$tmp" "$DEB822_SRC"
+            rm -f "$tmp"
+            return 0
+            ;;
+        1)
+            rm -f "$tmp"
+            return 0
+            ;;
+        *)
+            rm -f "$tmp"
+            return 1
+            ;;
+    esac
+}
+
+enable_contrib_nonfree_legacy() {
+    [[ -f "$LEGACY_SRC" ]] || return 1
+
+    local tmp rc
+    tmp="$(mktemp)"
+
+    if awk '
+function has_component(n, arr, want,    i) {
+    for (i = 1; i <= n; i++) {
+        if (arr[i] == want) return 1
+    }
+    return 0
+}
+function emit_components(n, arr,    i, out) {
+    out = "main"
+    if (has_component(n, arr, "contrib")) out = out " contrib"
+    else out = out " contrib"
+    if (has_component(n, arr, "non-free")) out = out " non-free"
+    else out = out " non-free"
+    if (has_component(n, arr, "non-free-firmware")) out = out " non-free-firmware"
+    return out
+}
+/^deb(-src)?[[:space:]]/ {
+    # Legacy source lines are: deb [options] URI suite components...
+    # Find the suite field after an optional [options] block, then tokenize components exactly.
+    split($0, f, /[[:space:]]+/)
+    suite_i = 3
+    if (f[2] ~ /^\[/) {
+        for (i = 2; i <= length(f); i++) {
+            if (f[i] ~ /\]$/) {
+                suite_i = i + 2
+                break
+            }
+        }
+    }
+    comp_start = suite_i + 1
+    n = 0
+    delete comps
+    for (i = comp_start; i <= length(f); i++) {
+        if (f[i] == "") continue
+        comps[++n] = f[i]
+    }
+    if (has_component(n, comps, "main") && has_component(n, comps, "non-free-firmware")) {
+        found = 1
+        if (!has_component(n, comps, "contrib") || !has_component(n, comps, "non-free")) {
+            changed = 1
+            prefix = ""
+            for (i = 1; i < comp_start; i++) {
+                prefix = prefix (i == 1 ? "" : " ") f[i]
+            }
+            print prefix " " emit_components(n, comps)
+            next
+        }
+    }
+}
+{ print }
+END {
+    if (!found) exit 2
+    if (!changed) exit 1
+    exit 0
+}
+' "$LEGACY_SRC" > "$tmp"; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    case "$rc" in
+        0)
+            sudo cp -a "$LEGACY_SRC" "${LEGACY_SRC}.bak.$(date +%Y%m%d-%H%M%S)"
+            sudo install -o root -g root -m 0644 "$tmp" "$LEGACY_SRC"
+            rm -f "$tmp"
+            return 0
+            ;;
+        1)
+            rm -f "$tmp"
+            return 0
+            ;;
+        *)
+            rm -f "$tmp"
+            return 1
+            ;;
+    esac
+}
+
+configure_apt_prompt_policy() {
+    info "Configuring noninteractive APT helper policy"
+
+    # Avoid apt-listchanges opening a pager during future apt runs.
+    if command -v debconf-set-selections >/dev/null 2>&1; then
+        printf 'apt-listchanges apt-listchanges/frontend select none\n' | sudo debconf-set-selections || true
+    fi
+
+    sudo install -D -m 0644 /dev/stdin /etc/apt/listchanges.conf.d/50-local.conf <<'EOFAPTLC'
+[apt]
+frontend=none
+EOFAPTLC
+
+    # Avoid needrestart service/kernel prompts during package installs/upgrades.
+    sudo install -D -m 0644 /dev/stdin /etc/needrestart/conf.d/50-autorestart.conf <<'EOFNR'
+# Restart services automatically; do not prompt.
+$nrconf{restart} = 'a';
+# Do not prompt about kernel/microcode either.
+$nrconf{kernelhints} = -1;
+EOFNR
+
+    success "APT helper policy configured"
+}
+
 configure_vscode_repo() {
     info "Configuring Microsoft VS Code APT repository"
 
-    local tmp_key
+    local tmp_asc tmp_key got_fp
+    tmp_asc="$(mktemp)"
     tmp_key="$(mktemp)"
 
-    wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > "$tmp_key"
+    wget -qO "$tmp_asc" https://packages.microsoft.com/keys/microsoft.asc
+
+    got_fp="$(gpg --show-keys --with-colons "$tmp_asc" 2>/dev/null \
+        | awk -F: '/^fpr:/ {print $10; exit}')"
+
+    [[ "$got_fp" == "$MS_KEY_FINGERPRINT" ]] || \
+        die "Microsoft GPG key fingerprint mismatch (got: ${got_fp:-none})"
+
+    gpg --dearmor < "$tmp_asc" > "$tmp_key"
     sudo install -D -o root -g root -m 0644 "$tmp_key" /usr/share/keyrings/microsoft.gpg
-    rm -f "$tmp_key"
+    rm -f "$tmp_asc" "$tmp_key"
 
     if [[ -f /etc/apt/sources.list.d/vscode.list ]]; then
         sudo mv /etc/apt/sources.list.d/vscode.list \
@@ -140,14 +338,14 @@ configure_vscode_repo() {
             "/etc/apt/sources.list.d/vscode.sources.bak.$(date +%Y%m%d-%H%M%S)"
     fi
 
-    sudo tee /etc/apt/sources.list.d/vscode.sources >/dev/null <<'EOF'
+    sudo tee /etc/apt/sources.list.d/vscode.sources >/dev/null <<'EOFVS'
 Types: deb
 URIs: https://packages.microsoft.com/repos/code
 Suites: stable
 Components: main
-Architectures: amd64,arm64,armhf
+Architectures: amd64,arm64
 Signed-By: /usr/share/keyrings/microsoft.gpg
-EOF
+EOFVS
 
     success "Microsoft VS Code APT repository configured"
 }
@@ -182,41 +380,43 @@ fi
 
 command -v sudo >/dev/null 2>&1 || die "sudo is missing."
 command -v apt-get >/dev/null 2>&1 || die "apt-get is missing. This script is intended for Debian."
+command -v awk >/dev/null 2>&1 || die "awk is missing."
+command -v wget >/dev/null 2>&1 || die "wget is missing."
 command -v gsettings >/dev/null 2>&1 || warn "gsettings not found yet; GNOME settings may fail until packages are installed."
 
 # ── APT sources: enable contrib/non-free ──────────────────────────────────────
 info "Checking APT sources"
 
-if grep -Eq '^deb(-src)? .* main non-free-firmware' /etc/apt/sources.list; then
-    sudo cp /etc/apt/sources.list "/etc/apt/sources.list.bak.$(date +%Y%m%d-%H%M%S)"
-    sudo sed -i -E '/^deb(-src)? / s/\bmain[[:space:]]+non-free-firmware\b/main contrib non-free non-free-firmware/' /etc/apt/sources.list
-    success "Enabled contrib and non-free APT sections"
+if enable_contrib_nonfree_deb822 || enable_contrib_nonfree_legacy; then
+    success "Confirmed contrib and non-free APT components"
 else
-    warn "APT sources do not match expected Debian 13 layout or are already changed — skipping sources.list edit"
+    warn "Could not enable contrib/non-free — neither Debian source file matched expected layout"
+    warn "Packages from contrib/non-free may fail to install, especially intel-microcode"
 fi
 
 # ── System update ─────────────────────────────────────────────────────────────
 info "Initial APT update"
-sudo apt-get update -qq
+apt_update
 
 info "Installing repository prerequisites"
-sudo apt-get install -y ca-certificates wget gpg
+apt_run install -y ca-certificates wget gpg
 
+configure_apt_prompt_policy
 configure_vscode_repo
 
 info "APT update with VS Code repository"
-sudo apt-get update -qq
+apt_update
 
 info "System upgrade"
 if [[ "$FULL_UPGRADE" == "1" ]]; then
-    sudo apt-get full-upgrade -y
+    apt_run full-upgrade -y
 else
-    sudo apt-get upgrade -y
+    apt_run upgrade -y
 fi
 
 # ── Base packages ─────────────────────────────────────────────────────────────
 info "Installing base packages"
-sudo apt-get install -y "${BASE_PACKAGES[@]}"
+apt_run install -y "${BASE_PACKAGES[@]}"
 success "Base packages installed"
 
 # ── Rootless Podman/Distrobox readiness ───────────────────────────────────────
@@ -233,6 +433,7 @@ if ! grep -q "^${USER}:" /etc/subgid; then
 fi
 
 success "Rootless Podman/Distrobox prerequisites checked"
+success "After reboot, run: distrobox create --name <name> --image <image>"
 
 # ── Timezone & locale ─────────────────────────────────────────────────────────
 info "Timezone and locale"
@@ -251,8 +452,6 @@ info "Configuring Flatpak + Flathub"
 
 sudo flatpak remote-add --if-not-exists flathub \
     https://flathub.org/repo/flathub.flatpakrepo
-
-sudo flatpak update --system -y
 
 info "Installing Flatpak apps"
 
@@ -275,6 +474,13 @@ for app in "${FLATPAK_APPS[@]}"; do
     fi
 done
 
+info "Refreshing installed system Flatpaks"
+if sudo flatpak update --system -y --noninteractive; then
+    success "System Flatpaks refreshed"
+else
+    warn "Flatpak refresh failed — continuing"
+fi
+
 # ── LibreWolf settings ────────────────────────────────────────────────────────
 # Applies LibreWolf Flatpak defaults through librewolf.overrides.cfg.
 info "Configuring LibreWolf settings"
@@ -290,18 +496,19 @@ if flatpak info --system io.gitlab.librewolf-community &>/dev/null; then
         warn "Existing LibreWolf overrides backed up"
     fi
 
-    cat > "$LIBREWOLF_CFG" <<'EOF'
+    cat > "$LIBREWOLF_CFG" <<'EOFLW'
 // LibreWolf user overrides generated by post-install-debian13.sh
 
-// Enable Firefox Sync
-pref("identity.fxaccounts.enabled", true);
+// Enable Firefox Sync by default
+// Use defaultPref for soft preferences so GUI changes remain possible.
+defaultPref("identity.fxaccounts.enabled", true);
 
 // Home page URL
-pref("browser.startup.homepage", "https://start.duckduckgo.com");
+defaultPref("browser.startup.homepage", "https://start.duckduckgo.com");
 
 // Follow system light/dark theme automatically
-pref("extensions.activeThemeID", "default-theme@mozilla.org");
-pref("layout.css.prefers-color-scheme.content-override", 2);
+defaultPref("extensions.activeThemeID", "default-theme@mozilla.org");
+defaultPref("layout.css.prefers-color-scheme.content-override", 2);
 
 // Enhanced Tracking Protection: Strict
 pref("browser.contentblocking.category", "strict");
@@ -331,50 +538,46 @@ pref("privacy.resistFingerprinting", true);
 defaultPref("browser.uiCustomization.state", "{\"placements\":{\"widget-overflow-fixed-list\":[],\"unified-extensions-area\":[],\"nav-bar\":[\"back-button\",\"forward-button\",\"stop-reload-button\",\"home-button\",\"urlbar-container\",\"downloads-button\",\"unified-extensions-button\"],\"toolbar-menubar\":[\"menubar-items\"],\"TabsToolbar\":[\"tabbrowser-tabs\",\"new-tab-button\",\"alltabs-button\"],\"PersonalToolbar\":[\"personal-bookmarks\"]},\"seen\":[\"home-button\"],\"dirtyAreaCache\":[\"nav-bar\",\"TabsToolbar\",\"toolbar-menubar\",\"PersonalToolbar\"],\"currentVersion\":20}");
 
 // Restore previous windows and tabs on normal startup
-pref("browser.startup.page", 3);
+defaultPref("browser.startup.page", 3);
 
 // Restore previous session after crash
-pref("browser.sessionstore.resume_from_crash", true);
+defaultPref("browser.sessionstore.resume_from_crash", true);
 
-// Do NOT clear private data on shutdown
-pref("privacy.sanitize.sanitizeOnShutdown", false);
+// Do NOT clear private data on shutdown by default
+defaultPref("privacy.sanitize.sanitizeOnShutdown", false);
 
-// Preserve cookies, site data, and login sessions across browser restarts
-pref("privacy.clearOnShutdown_v2.cookiesAndStorage", false);
-pref("privacy.clearOnShutdown.cookies", false);
-pref("privacy.clearOnShutdown.sessions", false);
-pref("privacy.clearOnShutdown.offlineApps", false);
-pref("network.cookie.lifetimePolicy", 0);
+// Preserve cookies, site data, and login sessions across browser restarts by default
+defaultPref("privacy.clearOnShutdown_v2.cookiesAndStorage", false);
+defaultPref("privacy.clearOnShutdown.cookies", false);
+defaultPref("privacy.clearOnShutdown.sessions", false);
+defaultPref("privacy.clearOnShutdown.offlineApps", false);
+defaultPref("network.cookie.lifetimePolicy", 0);
 
-// Preserve browsing and download history
-pref("privacy.clearOnShutdown.history", false);
-pref("privacy.clearOnShutdown.downloads", false);
+// Preserve browsing and download history by default
+defaultPref("privacy.clearOnShutdown.history", false);
+defaultPref("privacy.clearOnShutdown.downloads", false);
 
 // Preserve more session restore data
 // 0 = save all session data; 1 = save only first-party session data.
-pref("browser.sessionstore.privacy_level", 1);
+defaultPref("browser.sessionstore.privacy_level", 1);
 
-// Enable middle-click autoscroll, but prevent middle-click paste
-pref("middlemouse.paste", false);
-pref("general.autoScroll", true);
+// Enable middle-click autoscroll, but prevent middle-click paste by default
+defaultPref("middlemouse.paste", false);
+defaultPref("general.autoScroll", true);
 
-// Use a stricter autoplay policy
-pref("media.autoplay.blocking_policy", 2);
+// Use a stricter autoplay policy by default
+defaultPref("media.autoplay.blocking_policy", 2);
 
 // Keep WebGL disabled by default for privacy/fingerprinting resistance.
 // Uncomment only if needed for specific websites.
 // pref("webgl.disabled", false);
-EOF
+EOFLW
 
     chmod 0644 "$LIBREWOLF_CFG"
     success "LibreWolf settings written to $LIBREWOLF_CFG"
 else
     warn "LibreWolf Flatpak not installed — skipping LibreWolf settings"
 fi
-
-# ── Distrobox ─────────────────────────────────────────────────────────────────
-info "podman + distrobox ready"
-success "Run 'distrobox create --name <name> --image <image>' to create containers after reboot"
 
 # ── .bashrc additions ─────────────────────────────────────────────────────────
 info "Patching .bashrc"
@@ -388,7 +591,7 @@ fi
 if grep -qF "$BASHRC_MARKER" "$HOME/.bashrc"; then
     warn ".bashrc already patched — skipping"
 else
-    cat >> "$HOME/.bashrc" <<'EOF'
+    cat >> "$HOME/.bashrc" <<'EOFBASHRC'
 
 # >>> post-install additions <<<
 
@@ -420,7 +623,7 @@ HISTCONTROL=ignoreboth
 shopt -s histappend
 
 # >>> end post-install additions <<<
-EOF
+EOFBASHRC
     success ".bashrc patched"
 fi
 
@@ -496,25 +699,25 @@ fi
 
 # ── Unattended upgrades ───────────────────────────────────────────────────────
 info "Enabling unattended upgrades"
-sudo apt-get install -y unattended-upgrades apt-listchanges
+apt_run install -y unattended-upgrades apt-listchanges
 
-sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null <<'EOF'
+sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null <<'EOFAUTOUP'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
-EOF
+EOFAUTOUP
 
-sudo tee /etc/apt/apt.conf.d/52unattended-local >/dev/null <<'EOF'
+sudo tee /etc/apt/apt.conf.d/52unattended-local >/dev/null <<'EOFUNATTENDED'
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 Unattended-Upgrade::Automatic-Reboot "false";
-EOF
+EOFUNATTENDED
 
 success "Unattended upgrades configured using Debian defaults, no auto-reboot"
 
 # ── Final cleanup ─────────────────────────────────────────────────────────────
 info "Cleaning up"
-sudo apt-get autoremove -y
-sudo apt-get clean
+apt_run autoremove -y
+apt_run clean
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n'
@@ -534,9 +737,9 @@ printf '  • You will be prompted to confirm reboot.\n'
 printf '  ────────────────────────────────────────\n'
 printf '\n'
 
-# ── Mandatory reboot ──────────────────────────────────────────────────────────
-info "Mandatory reboot"
-warn "System should reboot to apply kernel, firmware, Flatpak, GNOME, and package changes."
+# ── Final reboot ──────────────────────────────────────────────────────────────
+info "Final reboot"
+info "System should reboot to apply kernel, firmware, Flatpak, GNOME, and package changes."
 
 sync
 
