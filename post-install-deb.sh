@@ -207,6 +207,8 @@ else
     gsettings set org.gnome.desktop.interface show-battery-percentage true
     gsettings set org.gnome.desktop.interface clock-show-seconds true
     gsettings set org.gnome.desktop.interface clock-show-weekday true
+    # Window buttons: minimize, maximize, close on the right side
+    gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close'
 
     # JetBrains Mono in GNOME Terminal, if the schema exists.
     if gsettings list-schemas 2>/dev/null | grep -q '^org.gnome.Terminal.ProfilesList$'; then
