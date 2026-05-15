@@ -20,3 +20,9 @@ Lenovo  ThinkPad P50 Workstation setup and maintenance
   <p>Initializing and enabling the Validity/Synaptics VFS7500 fingerprint reader:</p>
   <pre><code>tmp="$(mktemp)" &amp;&amp; curl -fsSL https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/main/fingerprint-deb.sh -o "$tmp" &amp;&amp; sudo bash "$tmp"; rm -f "$tmp"</code></pre>
 </details>
+  
+<details>
+  <summary>Install Nvidia Driver, Debian 13/ThinkPad P50</summary>
+  <p>Nvidia Driver installation, works on Secure boot:</p>
+  <pre><code>tmp="$(mktemp)" &amp;&amp; curl -fsSL https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/refs/heads/main/nvidia-driver-install.sh -o "$tmp" &amp;&amp; sudo bash "$tmp"; rm -f "$tmp"</code></pre>
+</details>
