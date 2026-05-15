@@ -31,6 +31,7 @@ FLATPAK_APPS=(
     io.missioncenter.MissionCenter
     com.github.tchx84.Flatseal
     org.gnome.World.Secrets
+    com.visualstudio.code
     # org.gimp.GIMP
     # org.inkscape.Inkscape
     # com.obsproject.Studio
@@ -237,6 +238,7 @@ if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
         'org.gnome.Nautilus.desktop',
         'io.gitlab.librewolf-community.desktop',
         'org.mozilla.Thunderbird.desktop',
+        'com.visualstudio.code.desktop',
         'org.gnome.Terminal.desktop',
         'org.gnome.gedit.desktop',
         'org.gnome.Boxes.desktop',
