@@ -74,6 +74,8 @@ BASE_PACKAGES=(
     jq
     fwupd
     gnome-firmware
+    upower
+    power-profiles-daemon
     firmware-linux-nonfree
     intel-microcode
     plocate
@@ -107,6 +109,28 @@ apt_update() {
 
 apt_run() {
     sudo env DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" "$@"
+}
+
+remove_power_profile_conflicts() {
+    local pkg
+    local conflicts=()
+
+    for pkg in tlp tlp-rdw tuned tuned-utils; do
+        if dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii '; then
+            conflicts+=("$pkg")
+        fi
+    done
+
+    if ((${#conflicts[@]})); then
+        info "Removing conflicting power profile managers"
+        warn "Removing packages that conflict with power-profiles-daemon: ${conflicts[*]}"
+
+        if apt_run remove -y "${conflicts[@]}"; then
+            success "Conflicting power profile managers removed"
+        else
+            warn "Could not remove conflicting power profile managers — base package install may fail"
+        fi
+    fi
 }
 
 gset() {
@@ -415,6 +439,8 @@ else
 fi
 
 # ── Base packages ─────────────────────────────────────────────────────────────
+remove_power_profile_conflicts
+
 info "Installing base packages"
 apt_run install -y "${BASE_PACKAGES[@]}"
 success "Base packages installed"
@@ -434,6 +460,135 @@ fi
 
 success "Rootless Podman/Distrobox prerequisites checked"
 success "After reboot, run: distrobox create --name <name> --image <image>"
+
+# ── Battery health charging threshold ─────────────────────────────────────────
+# Enables GNOME/UPower "Preserve Battery Health" when supported by hardware.
+info "Checking battery health charging threshold support"
+
+if ! command -v upower >/dev/null 2>&1; then
+    warn "upower not found — skipping battery health charging threshold"
+elif ! command -v busctl >/dev/null 2>&1; then
+    warn "busctl not found — skipping battery health charging threshold"
+else
+    BATTERY_PATH="$(upower -e 2>/dev/null | grep -m1 '/battery_' || true)"
+
+    if [[ -z "$BATTERY_PATH" ]]; then
+        warn "No UPower battery device found — skipping battery health charging threshold"
+    elif upower -i "$BATTERY_PATH" 2>/dev/null | grep -Eq 'charge-threshold-supported:[[:space:]]*yes'; then
+        if sudo busctl call org.freedesktop.UPower \
+            "$BATTERY_PATH" \
+            org.freedesktop.UPower.Device \
+            EnableChargeThreshold b true >/dev/null 2>&1; then
+            success "Battery health charging threshold enabled"
+            upower -i "$BATTERY_PATH" | grep -E 'charge-(start|end)-threshold|charge-threshold' || true
+        else
+            warn "Failed to enable battery health charging threshold via UPower"
+        fi
+    else
+        warn "Battery health charging threshold not supported/reported by UPower on this device"
+    fi
+fi
+
+# ── Automatic power profile switching ─────────────────────────────────────────
+# AC power -> performance, if supported; battery -> balanced.
+info "Configuring automatic power profile switching"
+
+if ! command -v powerprofilesctl >/dev/null 2>&1; then
+    warn "powerprofilesctl not found — skipping automatic power profile switching"
+else
+    sudo tee /usr/local/sbin/auto-power-profile >/dev/null <<'EOFAPP'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+log() {
+    logger -t auto-power-profile "$*"
+}
+
+if ! command -v powerprofilesctl >/dev/null 2>&1; then
+    log "powerprofilesctl not found; skipping"
+    exit 0
+fi
+
+profile_available() {
+    local profile="$1"
+    powerprofilesctl list 2>/dev/null | grep -Eq "^[*[:space:]]*${profile}:"
+}
+
+on_ac=0
+
+for ps in /sys/class/power_supply/*; do
+    [[ -r "$ps/type" ]] || continue
+
+    case "$(<"$ps/type")" in
+        Mains|USB|USB_C|USB_PD|USB_PD_DRP)
+            if [[ -r "$ps/online" ]] && [[ "$(<"$ps/online")" == "1" ]]; then
+                on_ac=1
+                break
+            fi
+            ;;
+    esac
+done
+
+if [[ "$on_ac" == "1" ]]; then
+    if profile_available performance; then
+        target="performance"
+    else
+        target="balanced"
+        log "performance profile unavailable; falling back to balanced"
+    fi
+else
+    target="balanced"
+fi
+
+current="$(powerprofilesctl get 2>/dev/null || true)"
+
+if [[ "$current" != "$target" ]]; then
+    if powerprofilesctl set "$target"; then
+        log "set power profile: $target"
+    else
+        log "failed to set power profile: $target"
+        exit 0
+    fi
+else
+    log "power profile already set: $target"
+fi
+EOFAPP
+
+    sudo chown root:root /usr/local/sbin/auto-power-profile
+    sudo chmod 0755 /usr/local/sbin/auto-power-profile
+
+    sudo tee /etc/systemd/system/auto-power-profile.service >/dev/null <<'EOFAPPSVC'
+[Unit]
+Description=Set power profile based on AC/battery state
+Wants=power-profiles-daemon.service
+After=power-profiles-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/auto-power-profile
+
+[Install]
+WantedBy=multi-user.target
+EOFAPPSVC
+
+    sudo tee /etc/udev/rules.d/90-auto-power-profile.rules >/dev/null <<'EOFAPPUDEV'
+SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="Mains", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
+SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
+SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB_C", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
+SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB_PD", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
+SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB_PD_DRP", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
+EOFAPPUDEV
+
+    if sudo systemctl daemon-reload &&
+       sudo systemctl enable --now power-profiles-daemon.service &&
+       sudo systemctl enable --now auto-power-profile.service &&
+       sudo udevadm control --reload-rules; then
+        sudo udevadm trigger --subsystem-match=power_supply --action=change || true
+        success "Automatic power profile switching configured"
+    else
+        warn "Could not fully enable automatic power profile switching"
+    fi
+fi
 
 # ── Timezone & locale ─────────────────────────────────────────────────────────
 info "Timezone and locale"
@@ -641,6 +796,13 @@ else
     gset org.gnome.desktop.interface clock-show-seconds true
     gset org.gnome.desktop.interface clock-show-weekday true
 
+    # Power behavior:
+    # AC power -> no automatic suspend/hibernate; battery -> suspend after 30 minutes.
+    gset org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
+    gset org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
+    gset org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'suspend'
+    gset org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 1800
+
     # Window buttons: minimize, maximize, close on the right side
     gset org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close'
 
@@ -672,6 +834,85 @@ else
     fi
 
     success "GNOME settings applied"
+fi
+
+# ── GNOME screen blank timeout by power state ─────────────────────────────────
+# AC power -> screen blank after 10 minutes; battery -> screen blank after 5 minutes.
+info "Configuring GNOME screen blank timeout by power state"
+
+mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
+
+cat > "$HOME/.local/bin/gnome-idle-by-power" <<'EOFGIBP'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+on_ac_power() {
+    local ps
+
+    for ps in /sys/class/power_supply/*; do
+        [[ -r "$ps/type" ]] || continue
+
+        case "$(<"$ps/type")" in
+            Mains|USB|USB_C|USB_PD|USB_PD_DRP)
+                if [[ -r "$ps/online" ]] && [[ "$(<"$ps/online")" == "1" ]]; then
+                    return 0
+                fi
+                ;;
+        esac
+    done
+
+    return 1
+}
+
+last_state=""
+
+while true; do
+    if on_ac_power; then
+        state="ac"
+        idle_delay=600
+    else
+        state="battery"
+        idle_delay=300
+    fi
+
+    if [[ "$state" != "$last_state" ]]; then
+        gsettings set org.gnome.desktop.session idle-delay "$idle_delay" || true
+        last_state="$state"
+    fi
+
+    sleep 20
+done
+EOFGIBP
+
+chmod 0755 "$HOME/.local/bin/gnome-idle-by-power"
+
+cat > "$HOME/.config/systemd/user/gnome-idle-by-power.service" <<'EOFGIBPSVC'
+[Unit]
+Description=Set GNOME screen blank timeout based on AC/battery state
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gnome-idle-by-power
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOFGIBPSVC
+
+if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS || true
+
+    if systemctl --user daemon-reload &&
+       systemctl --user enable --now gnome-idle-by-power.service; then
+        success "GNOME screen blank timeout service enabled"
+    else
+        warn "Could not enable GNOME screen blank timeout user service"
+    fi
+else
+    warn "No active GNOME D-Bus session — screen blank timeout service written but not enabled"
 fi
 
 # ── Pin apps to GNOME Dash ────────────────────────────────────────────────────
@@ -732,6 +973,10 @@ printf '  Next steps:\n'
 printf '  • Log back in after reboot for .bashrc + GNOME changes to fully take effect\n'
 printf '  • Create your first Distrobox after reboot:\n'
 printf '      distrobox create --name deb-1 --image debian:trixie\n'
+printf '  • Battery health charging threshold enabled if supported by hardware.\n'
+printf '  • Power profile: performance on AC, balanced on battery if supported.\n'
+printf '  • Power: no suspend on AC; suspend after 30 min on battery.\n'
+printf '  • Screen blank: 10 min on AC, 5 min on battery.\n'
 printf '  • Open Timeshift and configure snapshots manually.\n'
 printf '  • You will be prompted to confirm reboot.\n'
 printf '  ────────────────────────────────────────\n'
