@@ -64,6 +64,11 @@ BASE_PACKAGES=(
     gnome-shell-extensions
     gnome-terminal
     gedit
+    nautilus
+    gsettings-desktop-schemas
+    gnome-settings-daemon
+    libglib2.0-bin
+    dconf-cli
     fonts-jetbrains-mono
     # fonts-firacode
     xclip
@@ -138,18 +143,13 @@ gset() {
     local key="$2"
     local value="$3"
 
-    if ! gsettings list-schemas 2>/dev/null | grep -Fxq "$schema"; then
-        warn "Skipping missing GNOME schema: $schema"
-        return 0
-    fi
-
-    if ! gsettings list-keys "$schema" 2>/dev/null | grep -Fxq "$key"; then
+    if gsettings list-schemas 2>/dev/null | grep -qx "$schema" &&
+       gsettings list-keys "$schema" 2>/dev/null | grep -qx "$key"; then
+        if ! gsettings set "$schema" "$key" "$value"; then
+            warn "Failed to set GNOME setting: $schema $key"
+        fi
+    else
         warn "Skipping missing GNOME setting: $schema $key"
-        return 0
-    fi
-
-    if ! gsettings set "$schema" "$key" "$value"; then
-        warn "Failed to set GNOME setting: $schema $key"
     fi
 }
 
@@ -158,50 +158,12 @@ gset_path() {
     local key="$2"
     local value="$3"
 
-    if ! gsettings list-keys "$schema_path" 2>/dev/null | grep -Fxq "$key"; then
+    if gsettings list-keys "$schema_path" 2>/dev/null | grep -qx "$key"; then
+        if ! gsettings set "$schema_path" "$key" "$value"; then
+            warn "Failed to set GNOME setting: $schema_path $key"
+        fi
+    else
         warn "Skipping missing GNOME setting: $schema_path $key"
-        return 0
-    fi
-
-    if ! gsettings set "$schema_path" "$key" "$value"; then
-        warn "Failed to set GNOME setting: $schema_path $key"
-    fi
-}
-
-prepare_gsettings_environment() {
-    # Host GNOME settings must use the system schema database. Some terminals or
-    # app-launched shells can inherit GSETTINGS_SCHEMA_DIR from another runtime,
-    # which makes gsettings see partial or wrong schemas.
-    if [[ -n "${GSETTINGS_SCHEMA_DIR:-}" ]]; then
-        warn "Ignoring inherited GSETTINGS_SCHEMA_DIR for host GNOME settings: $GSETTINGS_SCHEMA_DIR"
-        unset GSETTINGS_SCHEMA_DIR
-    fi
-
-    # GLib also locates compiled schemas through XDG_DATA_DIRS. If this was
-    # inherited from a restricted runtime and does not include /usr/share,
-    # gsettings cannot see normal GNOME schemas such as org.gnome.desktop.interface.
-    case ":${XDG_DATA_DIRS:-}:" in
-        *:/usr/share:* ) ;;
-        "::")
-            export XDG_DATA_DIRS="/usr/local/share:/usr/share"
-            warn "Set XDG_DATA_DIRS for host GNOME settings: $XDG_DATA_DIRS"
-            ;;
-        *)
-            export XDG_DATA_DIRS="/usr/local/share:/usr/share:$XDG_DATA_DIRS"
-            warn "Prepended system data dirs for host GNOME settings: $XDG_DATA_DIRS"
-            ;;
-    esac
-
-    # Normally package triggers maintain this, but compiling explicitly is cheap
-    # and avoids stale schema-cache edge cases after a large first-run install.
-    if command -v glib-compile-schemas >/dev/null 2>&1 && [[ -d /usr/share/glib-2.0/schemas ]]; then
-        sudo glib-compile-schemas /usr/share/glib-2.0/schemas >/dev/null 2>&1 || \
-            warn "Could not refresh system GSettings schema cache"
-    fi
-
-    if ! gsettings list-schemas 2>/dev/null | grep -Fxq org.gnome.desktop.interface; then
-        warn "Host GNOME schemas are still not visible to gsettings; skipping unavailable settings below"
-        warn "Current XDG_DATA_DIRS=${XDG_DATA_DIRS:-unset}"
     fi
 }
 
@@ -435,7 +397,7 @@ EOFVS
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 if [[ $EUID -eq 0 ]]; then
-    cat >&2 <<'EOF'
+    cat >&2 <<'EOFROOT'
 ERROR: Do not run this script as root.
 
 Run it as your normal GNOME desktop user.
@@ -448,7 +410,7 @@ Correct one-liner:
 
 Wrong:
   sudo bash post-install-debian13.sh
-EOF
+EOFROOT
     exit 1
 fi
 
@@ -843,7 +805,6 @@ fi
 
 # ── GNOME settings ────────────────────────────────────────────────────────────
 info "Applying GNOME settings"
-prepare_gsettings_environment
 
 if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
     warn "No active GNOME D-Bus session — skipping gsettings. Run from a GNOME Terminal."
@@ -862,6 +823,10 @@ else
     gset org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
     gset org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'suspend'
     gset org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 1800
+
+    # Direct GNOME setting: one global screen blank timeout.
+    # GNOME does not expose separate direct AC/battery idle-delay keys here.
+    gset org.gnome.desktop.session idle-delay 600
 
     # Window buttons: minimize, maximize, close on the right side
     gset org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close'
@@ -894,85 +859,6 @@ else
     fi
 
     success "GNOME settings applied"
-fi
-
-# ── GNOME screen blank timeout by power state ─────────────────────────────────
-# AC power -> screen blank after 10 minutes; battery -> screen blank after 5 minutes.
-info "Configuring GNOME screen blank timeout by power state"
-
-mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
-
-cat > "$HOME/.local/bin/gnome-idle-by-power" <<'EOFGIBP'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-
-on_ac_power() {
-    local ps
-
-    for ps in /sys/class/power_supply/*; do
-        [[ -r "$ps/type" ]] || continue
-
-        case "$(<"$ps/type")" in
-            Mains|USB|USB_C|USB_PD|USB_PD_DRP)
-                if [[ -r "$ps/online" ]] && [[ "$(<"$ps/online")" == "1" ]]; then
-                    return 0
-                fi
-                ;;
-        esac
-    done
-
-    return 1
-}
-
-last_state=""
-
-while true; do
-    if on_ac_power; then
-        state="ac"
-        idle_delay=600
-    else
-        state="battery"
-        idle_delay=300
-    fi
-
-    if [[ "$state" != "$last_state" ]]; then
-        gsettings set org.gnome.desktop.session idle-delay "$idle_delay" || true
-        last_state="$state"
-    fi
-
-    sleep 20
-done
-EOFGIBP
-
-chmod 0755 "$HOME/.local/bin/gnome-idle-by-power"
-
-cat > "$HOME/.config/systemd/user/gnome-idle-by-power.service" <<'EOFGIBPSVC'
-[Unit]
-Description=Set GNOME screen blank timeout based on AC/battery state
-After=graphical-session.target
-PartOf=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart=%h/.local/bin/gnome-idle-by-power
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOFGIBPSVC
-
-if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
-    systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS || true
-
-    if systemctl --user daemon-reload &&
-       systemctl --user enable --now gnome-idle-by-power.service; then
-        success "GNOME screen blank timeout service enabled"
-    else
-        warn "Could not enable GNOME screen blank timeout user service"
-    fi
-else
-    warn "No active GNOME D-Bus session — screen blank timeout service written but not enabled"
 fi
 
 # ── Pin apps to GNOME Dash ────────────────────────────────────────────────────
@@ -1036,7 +922,7 @@ printf '      distrobox create --name deb-1 --image debian:trixie\n'
 printf '  • Battery health charging threshold enabled if supported by hardware.\n'
 printf '  • Power profile: performance on AC, balanced on battery if supported.\n'
 printf '  • Power: no suspend on AC; suspend after 30 min on battery.\n'
-printf '  • Screen blank: 10 min on AC, 5 min on battery.\n'
+printf '  • Screen blank: direct GNOME global idle-delay set to 10 min.\n'
 printf '  • Open Timeshift and configure snapshots manually.\n'
 printf '  • You will be prompted to confirm reboot.\n'
 printf '  ────────────────────────────────────────\n'
