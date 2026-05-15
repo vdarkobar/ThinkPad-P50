@@ -285,6 +285,10 @@ else
     gsettings set org.gnome.desktop.interface clock-show-weekday true
     # Window buttons: minimize, maximize, close on the right side
     gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close'
+    # Nautilus: list view and default window size
+    gsettings set org.gnome.nautilus.preferences default-folder-viewer 'list-view'
+    gsettings set org.gnome.nautilus.window-state initial-size '(1000,700)'
+    gsettings set org.gnome.nautilus.window-state maximized false
     # Keyboard layouts: English US + German + Montenegrin Latin
     gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('xkb', 'de'), ('xkb', 'me')]"
     gsettings set org.gnome.desktop.input-sources current 0
