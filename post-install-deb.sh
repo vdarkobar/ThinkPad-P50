@@ -180,6 +180,29 @@ defaultPref("browser.startup.homepage", "https://start.duckduckgo.com");
 defaultPref("extensions.activeThemeID", "default-theme@mozilla.org");
 defaultPref("layout.css.prefers-color-scheme.content-override", 2);
 
+// Enhanced Tracking Protection: Strict
+pref("browser.contentblocking.category", "strict");
+pref("privacy.trackingprotection.enabled", true);
+pref("privacy.trackingprotection.pbmode.enabled", true);
+pref("privacy.trackingprotection.socialtracking.enabled", true);
+pref("privacy.trackingprotection.cryptomining.enabled", true);
+pref("privacy.trackingprotection.fingerprinting.enabled", true);
+pref("privacy.fingerprintingProtection", true);
+pref("privacy.fingerprintingProtection.pbmode", true);
+pref("network.cookie.cookieBehavior", 5);
+pref("network.cookie.cookieBehavior.pbmode", 5);
+pref("privacy.query_stripping.enabled", true);
+pref("privacy.query_stripping.enabled.pbmode", true);
+
+// Strict-mode WebCompat exceptions:
+// "Fix major site issues" + "Fix minor site issues"
+pref("privacy.trackingprotection.allow_list.baseline.enabled", true);
+pref("privacy.trackingprotection.allow_list.convenience.enabled", true);
+
+// Keep LibreWolf/Firefox RFP enabled.
+// This causes the RFP warning shown in LibreWolf settings.
+pref("privacy.resistFingerprinting", true);
+
 // Show Home button in the navigation toolbar
 // NOTE: This sets the toolbar layout for fresh/default profiles.
 defaultPref("browser.uiCustomization.state", "{\"placements\":{\"widget-overflow-fixed-list\":[],\"unified-extensions-area\":[],\"nav-bar\":[\"back-button\",\"forward-button\",\"stop-reload-button\",\"home-button\",\"urlbar-container\",\"downloads-button\",\"unified-extensions-button\"],\"toolbar-menubar\":[\"menubar-items\"],\"TabsToolbar\":[\"tabbrowser-tabs\",\"new-tab-button\",\"alltabs-button\"],\"PersonalToolbar\":[\"personal-bookmarks\"]},\"seen\":[\"home-button\"],\"dirtyAreaCache\":[\"nav-bar\",\"TabsToolbar\",\"toolbar-menubar\",\"PersonalToolbar\"],\"currentVersion\":20}");
