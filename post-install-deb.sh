@@ -173,18 +173,24 @@ if flatpak info --system io.gitlab.librewolf-community &>/dev/null; then
 // Enable Firefox Sync
 defaultPref("identity.fxaccounts.enabled", true);
 
-// Home button URL
+// Home page URL
 defaultPref("browser.startup.homepage", "https://start.duckduckgo.com");
 
-// Show Home button in the navigation toolbar
-defaultPref("browser.uiCustomization.state", "{\"placements\":{\"widget-overflow-fixed-list\":[],\"unified-extensions-area\":[],\"nav-bar\":[\"back-button\",\"forward-button\",\"stop-reload-button\",\"home-button\",\"urlbar-container\",\"downloads-button\",\"unified-extensions-button\"],\"toolbar-menubar\":[\"menubar-items\"],\"TabsToolbar\":[\"tabbrowser-tabs\",\"new-tab-button\",\"alltabs-button\"],\"PersonalToolbar\":[\"personal-bookmarks\"]},\"seen\":[\"home-button\"],\"dirtyAreaCache\":[\"nav-bar\",\"TabsToolbar\",\"toolbar-menubar\",\"PersonalToolbar\"],\"currentVersion\":20}");
+// Restore previous windows and tabs on normal startup
+defaultPref("browser.startup.page", 3);
+
+// Restore previous session after crash
+defaultPref("browser.sessionstore.resume_from_crash", true);
 
 // Preserve browsing and download history
 defaultPref("privacy.clearOnShutdown.history", false);
 defaultPref("privacy.clearOnShutdown.downloads", false);
 
-// Restore previous session after crash
-defaultPref("browser.sessionstore.resume_from_crash", true);
+// Preserve login/session data across browser restarts
+defaultPref("privacy.clearOnShutdown.cookies", false);
+defaultPref("privacy.clearOnShutdown.sessions", false);
+defaultPref("privacy.clearOnShutdown.offlineApps", false);
+defaultPref("network.cookie.lifetimePolicy", 0);
 
 // Enable middle-click autoscroll, but prevent middle-click paste
 defaultPref("middlemouse.paste", false);
@@ -192,6 +198,10 @@ defaultPref("general.autoScroll", true);
 
 // Use a stricter autoplay policy
 defaultPref("media.autoplay.blocking_policy", 2);
+
+// Show Home button in the navigation toolbar
+// NOTE: This sets the toolbar layout for fresh/default profiles.
+defaultPref("browser.uiCustomization.state", "{\"placements\":{\"widget-overflow-fixed-list\":[],\"unified-extensions-area\":[],\"nav-bar\":[\"back-button\",\"forward-button\",\"stop-reload-button\",\"home-button\",\"urlbar-container\",\"downloads-button\",\"unified-extensions-button\"],\"toolbar-menubar\":[\"menubar-items\"],\"TabsToolbar\":[\"tabbrowser-tabs\",\"new-tab-button\",\"alltabs-button\"],\"PersonalToolbar\":[\"personal-bookmarks\"]},\"seen\":[\"home-button\"],\"dirtyAreaCache\":[\"nav-bar\",\"TabsToolbar\",\"toolbar-menubar\",\"PersonalToolbar\"],\"currentVersion\":20}");
 
 // Keep WebGL disabled by default for privacy/fingerprinting resistance.
 // Uncomment only if needed for specific websites.
