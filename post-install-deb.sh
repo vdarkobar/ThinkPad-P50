@@ -26,6 +26,7 @@ FULL_UPGRADE=1              # 0 = apt upgrade only; 1 = apt full-upgrade
 FLATPAK_APPS=(
     io.gitlab.librewolf-community
     org.mozilla.Thunderbird
+    com.bitwarden.desktop
     com.mattjakeman.ExtensionManager
     io.missioncenter.MissionCenter
     com.github.tchx84.Flatseal
