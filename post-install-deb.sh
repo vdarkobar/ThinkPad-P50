@@ -45,7 +45,6 @@ BASE_PACKAGES=(
     curl
     wget
     git
-    htop
     btop
     fastfetch
     locales
@@ -53,6 +52,8 @@ BASE_PACKAGES=(
     gnome-software-plugin-flatpak
     podman
     distrobox
+    wireguard
+    nm-connection-editor
     gnome-boxes
     gnome-tweaks
     gnome-shell-extensions
