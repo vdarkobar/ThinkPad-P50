@@ -211,7 +211,7 @@ else
     # Window buttons: minimize, maximize, close on the right side
     gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close'
     # Keyboard layouts: English US + German + Montenegrin Latin
-    gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('xkb', 'de'), ('xkb', 'me+latinunicode')]"
+    gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('xkb', 'de'), ('xkb', 'me')]"
     gsettings set org.gnome.desktop.input-sources current 0
     gsettings set org.gnome.desktop.input-sources per-window false
 
