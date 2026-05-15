@@ -366,7 +366,7 @@ printf '  Next steps:\n'
 printf '  • Log back in after reboot for .bashrc + GNOME changes to fully take effect\n'
 printf '  • Create your first Distrobox after reboot:\n'
 printf '      distrobox create --name deb-1 --image debian:bookworm\n'
-printf '  • System will reboot automatically now.\n'
+printf '  • You will be prompted to confirm reboot.\n'
 printf '  ────────────────────────────────────────\n'
 printf '\n'
 
