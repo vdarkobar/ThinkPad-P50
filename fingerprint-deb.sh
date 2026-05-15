@@ -397,6 +397,54 @@ clone_repo() {
   fi
 }
 
+patch_vfs0090_driver_source() {
+  local driver_dir="$1"
+  local source_file="${driver_dir}/vfs0090.c"
+
+  log "Patching VFS0090 TOD driver for current libfprint TOD SSM API"
+
+  [[ -f "${source_file}" ]] || die "Missing expected VFS0090 source file: ${source_file}"
+
+  local before after
+  before="$(grep -Ec 'fpi_ssm_next_state_delayed[[:space:]]*\([^;]*,[[:space:]]*NULL[[:space:]]*\)' "${source_file}" || true)"
+
+  python3 - "${source_file}" <<'PY_PATCH_VFS0090'
+from pathlib import Path
+import re
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+# libfprint TOD 1.94.9 exposes:
+#   fpi_ssm_next_state_delayed(FpiSsm *machine, int delay)
+# Some older vfs0090 source revisions still call the older 3-argument form
+# with a trailing NULL callback/user-data argument. Remove only that trailing
+# NULL, preserving spacing and the delay value.
+s2 = re.sub(
+    r"fpi_ssm_next_state_delayed\s*\(\s*([^,()]+)\s*,\s*([^,()]+?)\s*,\s*NULL\s*\)",
+    r"fpi_ssm_next_state_delayed (\1, \2)",
+    s,
+)
+
+if s2 != s:
+    p.write_text(s2)
+    print(f"Patched {p}")
+else:
+    print("No 3-argument fpi_ssm_next_state_delayed() calls found")
+PY_PATCH_VFS0090
+
+  after="$(grep -Ec 'fpi_ssm_next_state_delayed[[:space:]]*\([^;]*,[[:space:]]*NULL[[:space:]]*\)' "${source_file}" || true)"
+
+  if [[ "${after}" != "0" ]]; then
+    die "VFS0090 SSM API patch incomplete: ${after} old-style calls remain in ${source_file}"
+  fi
+
+  if [[ "${before}" == "0" ]]; then
+    warn "VFS0090 SSM API patch was not needed for this source revision."
+  fi
+}
+
 build_vfs0090_driver() {
   log "Building and installing libfprint TOD driver for VFS0090"
 
@@ -410,6 +458,7 @@ build_vfs0090_driver() {
 
   mkdir -p "${BUILD_DIR}"
   clone_repo "${VFS_DRIVER_REPO_URL}" "${VFS_DRIVER_REPO_REF}" "${driver_dir}"
+  patch_vfs0090_driver_source "${driver_dir}"
 
   cd "${driver_dir}"
 
