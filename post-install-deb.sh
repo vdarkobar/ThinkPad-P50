@@ -82,7 +82,7 @@ BASE_PACKAGES=(
     seahorse
     pavucontrol
     needrestart
-    tldr
+    tealdeer             # provides the tldr command on Debian 13/Trixie
     apparmor-utils
 )
 
@@ -95,7 +95,7 @@ APT_OPTS=(
 
 DEB822_SRC="/etc/apt/sources.list.d/debian.sources"
 LEGACY_SRC="/etc/apt/sources.list"
-MS_KEY_FINGERPRINT="EB3E94ADBE1229CF5C299C9984A88C5622A075CC"
+MS_KEY_FINGERPRINT="BC528686B50D79E339D3721CEB3E94ADBE1229CF"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { printf '\n\e[1;34m──\e[0m %s\n' "$*"; }
@@ -138,13 +138,18 @@ gset() {
     local key="$2"
     local value="$3"
 
-    if gsettings list-schemas | grep -qx "$schema" &&
-       gsettings list-keys "$schema" | grep -qx "$key"; then
-        if ! gsettings set "$schema" "$key" "$value"; then
-            warn "Failed to set GNOME setting: $schema $key"
-        fi
-    else
+    if ! gsettings list-schemas 2>/dev/null | grep -Fxq "$schema"; then
+        warn "Skipping missing GNOME schema: $schema"
+        return 0
+    fi
+
+    if ! gsettings list-keys "$schema" 2>/dev/null | grep -Fxq "$key"; then
         warn "Skipping missing GNOME setting: $schema $key"
+        return 0
+    fi
+
+    if ! gsettings set "$schema" "$key" "$value"; then
+        warn "Failed to set GNOME setting: $schema $key"
     fi
 }
 
@@ -153,12 +158,29 @@ gset_path() {
     local key="$2"
     local value="$3"
 
-    if gsettings list-keys "$schema_path" 2>/dev/null | grep -qx "$key"; then
-        if ! gsettings set "$schema_path" "$key" "$value"; then
-            warn "Failed to set GNOME setting: $schema_path $key"
-        fi
-    else
+    if ! gsettings list-keys "$schema_path" 2>/dev/null | grep -Fxq "$key"; then
         warn "Skipping missing GNOME setting: $schema_path $key"
+        return 0
+    fi
+
+    if ! gsettings set "$schema_path" "$key" "$value"; then
+        warn "Failed to set GNOME setting: $schema_path $key"
+    fi
+}
+
+prepare_gsettings_environment() {
+    # Host GNOME settings must use the system schema database. Some terminals or
+    # app-launched shells can inherit GSETTINGS_SCHEMA_DIR from another runtime,
+    # which makes gsettings see partial or wrong schemas.
+    if [[ -n "${GSETTINGS_SCHEMA_DIR:-}" ]]; then
+        warn "Ignoring inherited GSETTINGS_SCHEMA_DIR for host GNOME settings: $GSETTINGS_SCHEMA_DIR"
+        unset GSETTINGS_SCHEMA_DIR
+    fi
+
+    # Normally package triggers maintain this, but compiling explicitly is cheap
+    # and avoids stale schema-cache edge cases after a large first-run install.
+    if command -v glib-compile-schemas >/dev/null 2>&1 && [[ -d /usr/share/glib-2.0/schemas ]]; then
+        sudo glib-compile-schemas /usr/share/glib-2.0/schemas >/dev/null 2>&1 ||             warn "Could not refresh system GSettings schema cache"
     fi
 }
 
@@ -335,31 +357,47 @@ EOFNR
 configure_vscode_repo() {
     info "Configuring Microsoft VS Code APT repository"
 
-    local tmp_asc tmp_key got_fp
+    local tmp_asc tmp_key got_fps
     tmp_asc="$(mktemp)"
     tmp_key="$(mktemp)"
 
     wget -qO "$tmp_asc" https://packages.microsoft.com/keys/microsoft.asc
 
-    got_fp="$(gpg --show-keys --with-colons "$tmp_asc" 2>/dev/null \
-        | awk -F: '/^fpr:/ {print $10; exit}')"
+    got_fps="$(gpg --show-keys --with-colons "$tmp_asc" 2>/dev/null \
+        | awk -F: '/^fpr:/ {print $10}')"
 
-    [[ "$got_fp" == "$MS_KEY_FINGERPRINT" ]] || \
-        die "Microsoft GPG key fingerprint mismatch (got: ${got_fp:-none})"
+    if ! grep -qxF "$MS_KEY_FINGERPRINT" <<<"$got_fps"; then
+        die "Microsoft GPG key fingerprint mismatch (got: ${got_fps//$'\n'/, })"
+    fi
 
     gpg --dearmor < "$tmp_asc" > "$tmp_key"
     sudo install -D -o root -g root -m 0644 "$tmp_key" /usr/share/keyrings/microsoft.gpg
     rm -f "$tmp_asc" "$tmp_key"
 
+    # Keep backup copies outside /etc/apt/sources.list.d/.
+    # APT scans that directory and warns about backup filenames with invalid extensions.
+    local backup_dir backup_stamp backup_file
+    backup_dir="/var/backups/post-install-debian13/apt-sources"
+    backup_stamp="$(date +%Y%m%d-%H%M%S)"
+    sudo install -d -o root -g root -m 0755 "$backup_dir"
+
+    for backup_file in \
+        /etc/apt/sources.list.d/vscode.list.bak.* \
+        /etc/apt/sources.list.d/vscode.sources.bak.*; do
+        [[ -e "$backup_file" ]] || continue
+        sudo mv "$backup_file" "$backup_dir/"
+        warn "Moved old VS Code source backup out of APT source directory: $(basename "$backup_file")"
+    done
+
     if [[ -f /etc/apt/sources.list.d/vscode.list ]]; then
         sudo mv /etc/apt/sources.list.d/vscode.list \
-            "/etc/apt/sources.list.d/vscode.list.bak.$(date +%Y%m%d-%H%M%S)"
+            "$backup_dir/vscode.list.$backup_stamp.bak"
         warn "Backed up old vscode.list to avoid duplicate VS Code APT source"
     fi
 
     if [[ -f /etc/apt/sources.list.d/vscode.sources ]]; then
         sudo cp -a /etc/apt/sources.list.d/vscode.sources \
-            "/etc/apt/sources.list.d/vscode.sources.bak.$(date +%Y%m%d-%H%M%S)"
+            "$backup_dir/vscode.sources.$backup_stamp.bak"
     fi
 
     sudo tee /etc/apt/sources.list.d/vscode.sources >/dev/null <<'EOFVS'
@@ -784,6 +822,7 @@ fi
 
 # ── GNOME settings ────────────────────────────────────────────────────────────
 info "Applying GNOME settings"
+prepare_gsettings_environment
 
 if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
     warn "No active GNOME D-Bus session — skipping gsettings. Run from a GNOME Terminal."
