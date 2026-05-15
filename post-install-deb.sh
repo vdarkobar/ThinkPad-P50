@@ -372,6 +372,15 @@ printf '\n'
 
 # ── Mandatory reboot ──────────────────────────────────────────────────────────
 info "Mandatory reboot"
-warn "System will reboot now to apply kernel, firmware, Flatpak, GNOME, and package changes."
+warn "System will reboot to apply kernel, firmware, Flatpak, GNOME, and package changes."
+
 sync
+
+if [[ -t 0 ]]; then
+    printf '\nPress Enter to reboot now... '
+    read -r _
+else
+    warn "No interactive terminal detected — rebooting now."
+fi
+
 sudo systemctl reboot
