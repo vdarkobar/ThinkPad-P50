@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 trap 'echo "ERROR at line $LINENO: $BASH_COMMAND" >&2' ERR
 
-echo "==> Debian NVIDIA Secure Boot MOK preparation"
+echo "==> Debian 13 NVIDIA Secure Boot / MOK / Driver installer"
 echo
 
 if [[ $EUID -eq 0 ]]; then
@@ -54,9 +54,14 @@ echo "==> Pending MOK enrollment requests"
 sudo mokutil --list-new || true
 
 echo
+echo "==> Installing NVIDIA driver packages"
+sudo apt install nvidia-kernel-dkms nvidia-driver firmware-misc-nonfree nvtop
+
+echo
 echo "======================================================================"
 echo "IMPORTANT:"
 echo
+echo "The NVIDIA driver packages are now installed."
 echo "The system will reboot now."
 echo
 echo "During boot, the blue MOK Manager screen should appear."
@@ -66,9 +71,12 @@ echo "  Enroll MOK"
 echo "  Continue"
 echo "  Yes"
 echo
-echo "Then enter the password you created in the previous step."
+echo "Then enter the password you created during the MOK import step."
 echo
-echo "After Debian boots again, install the NVIDIA driver."
+echo "After Debian boots again, verify with:"
+echo "  mokutil --sb-state"
+echo "  dkms status"
+echo "  nvidia-smi"
 echo "======================================================================"
 echo
 
