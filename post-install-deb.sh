@@ -912,6 +912,28 @@ else
     success "GNOME settings applied"
 fi
 
+    # Dash to Dock appearance:
+    # Toggle only "Shrink the dash".
+    DASH_TO_DOCK_SCHEMA="org.gnome.shell.extensions.dash-to-dock"
+
+    DASH_TO_DOCK_SCHEMA_DIR="$(dpkg -L gnome-shell-extension-dashtodock 2>/dev/null \
+        | awk -v schema="$DASH_TO_DOCK_SCHEMA" '$0 ~ schema "\\.gschema\\.xml$" {
+            sub("/" schema "\\.gschema\\.xml$", "", $0)
+            print
+            exit
+        }')"
+
+    if [[ -n "$DASH_TO_DOCK_SCHEMA_DIR" ]]; then
+        if gsettings --schemadir "$DASH_TO_DOCK_SCHEMA_DIR" \
+            set "$DASH_TO_DOCK_SCHEMA" custom-theme-shrink true; then
+            success "Dash to Dock shrink setting enabled"
+        else
+            warn "Failed to set Dash to Dock shrink setting"
+        fi
+    else
+        warn "Dash to Dock schema not found — is gnome-shell-extension-dashtodock installed?"
+    fi
+
 # ── Pin apps to GNOME Dash ────────────────────────────────────────────────────
 # NOTE: This replaces the entire favorites list.
 info "Pinning apps to Dash"
