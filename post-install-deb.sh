@@ -63,6 +63,7 @@ BASE_PACKAGES=(
     gnome-boxes
     gnome-tweaks
     gnome-shell-extensions
+    gnome-shell-extension-dashtodock
     gnome-terminal
     gedit
     gsettings-desktop-schemas
