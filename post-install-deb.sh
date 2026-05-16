@@ -851,15 +851,15 @@ else
     # GNOME does not expose separate direct AC/battery idle-delay keys here.
     gset org.gnome.desktop.session idle-delay 600
 
-    # Window buttons: minimize, maximize, close on the right side
+    # Window buttons: minimize, maximize, close on the right side.
     gset org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close'
 
-    # Nautilus: list view and default window size
+    # Nautilus: list view and default window size.
     gset org.gnome.nautilus.preferences default-folder-viewer 'list-view'
     gset org.gnome.nautilus.window-state initial-size '(1000, 700)'
     gset org.gnome.nautilus.window-state maximized false
 
-    # Keyboard layouts: English US + German + Montenegrin Latin
+    # Keyboard layouts: English US + German + Montenegrin Latin.
     gset org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('xkb', 'de'), ('xkb', 'me')]"
     gset org.gnome.desktop.input-sources current 0
     gset org.gnome.desktop.input-sources per-window false
@@ -879,6 +879,34 @@ else
         fi
     else
         warn "GNOME Terminal schema not found — skipping terminal size setting"
+    fi
+
+    # Enable Dash to Dock extension.
+    DASH_TO_DOCK_UUID="dash-to-dock@micxgx.gmail.com"
+
+    if gsettings_has_schema org.gnome.shell && gsettings_has_key org.gnome.shell enabled-extensions; then
+        ENABLED_EXTENSIONS="$(gsettings get org.gnome.shell enabled-extensions)"
+
+        if [[ "$ENABLED_EXTENSIONS" == *"'$DASH_TO_DOCK_UUID'"* ]]; then
+            success "Dash to Dock already enabled"
+        elif [[ "$ENABLED_EXTENSIONS" == "@as []" || "$ENABLED_EXTENSIONS" == "[]" ]]; then
+            gsettings set org.gnome.shell enabled-extensions "['$DASH_TO_DOCK_UUID']"
+            success "Dash to Dock enabled"
+        else
+            gsettings set org.gnome.shell enabled-extensions "${ENABLED_EXTENSIONS%]}, '$DASH_TO_DOCK_UUID']"
+            success "Dash to Dock enabled"
+        fi
+    else
+        warn "GNOME Shell extension setting missing — skipping Dash to Dock enablement"
+    fi
+
+    # Dash to Dock appearance:
+    # icon size 32 px and shrink dock height around icons.
+    if gsettings_has_schema org.gnome.shell.extensions.dash-to-dock; then
+        gset org.gnome.shell.extensions.dash-to-dock dash-max-icon-size 32
+        gset org.gnome.shell.extensions.dash-to-dock extend-height false
+    else
+        warn "Dash to Dock schema not found — skipping Dash to Dock appearance settings"
     fi
 
     success "GNOME settings applied"
