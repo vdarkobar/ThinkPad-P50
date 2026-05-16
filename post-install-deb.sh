@@ -835,6 +835,7 @@ else
     gset org.gnome.settings-daemon.plugins.color night-light-schedule-automatic true
     gset org.gnome.desktop.peripherals.touchpad natural-scroll true
     gset org.gnome.desktop.interface show-battery-percentage true
+    gset org.gnome.desktop.interface clock-format "'24h'"
     gset org.gnome.desktop.interface clock-show-seconds true
     gset org.gnome.desktop.interface clock-show-weekday true
 
