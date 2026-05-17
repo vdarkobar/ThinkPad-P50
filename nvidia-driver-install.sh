@@ -58,6 +58,17 @@ echo "==> Installing NVIDIA driver packages"
 sudo apt install nvidia-kernel-dkms nvidia-driver firmware-misc-nonfree nvtop
 
 echo
+echo "==> Enabling NVIDIA Wayland/suspend power-management support"
+sudo tee /etc/modprobe.d/nvidia-power-management.conf >/dev/null <<'EOF'
+options nvidia NVreg_PreserveVideoMemoryAllocations=1 NVreg_TemporaryFilePath=/var/tmp
+EOF
+
+sudo systemctl enable nvidia-suspend.service nvidia-resume.service nvidia-hibernate.service
+
+# Rebuild initramfs so the NVIDIA module option is available early enough on boot.
+sudo update-initramfs -u
+
+echo
 echo "======================================================================"
 echo "IMPORTANT:"
 echo
