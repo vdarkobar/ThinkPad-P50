@@ -60,10 +60,10 @@ BASE_PACKAGES=(
     passt
     wireguard
     nm-connection-editor
-    gnome-boxes
     gnome-tweaks
     gnome-shell-extensions
     gnome-shell-extension-dashtodock
+    gnome-shell-extension-appindicator
     gnome-terminal
     gedit
     gsettings-desktop-schemas
@@ -933,6 +933,25 @@ fi
     else
         warn "Dash to Dock schema not found — is gnome-shell-extension-dashtodock installed?"
     fi
+
+# Enable AppIndicator / KStatusNotifierItem support extension.
+APPINDICATOR_UUID="appindicatorsupport@rgcjonas.gmail.com"
+
+if gsettings_has_schema org.gnome.shell && gsettings_has_key org.gnome.shell enabled-extensions; then
+    ENABLED_EXTENSIONS="$(gsettings get org.gnome.shell enabled-extensions)"
+
+    if [[ "$ENABLED_EXTENSIONS" == *"'$APPINDICATOR_UUID'"* ]]; then
+        success "AppIndicator extension already enabled"
+    elif [[ "$ENABLED_EXTENSIONS" == "@as []" || "$ENABLED_EXTENSIONS" == "[]" ]]; then
+        gsettings set org.gnome.shell enabled-extensions "['$APPINDICATOR_UUID']"
+        success "AppIndicator extension enabled"
+    else
+        gsettings set org.gnome.shell enabled-extensions "${ENABLED_EXTENSIONS%]}, '$APPINDICATOR_UUID']"
+        success "AppIndicator extension enabled"
+    fi
+else
+    warn "GNOME Shell extension setting missing — skipping AppIndicator enablement"
+fi
 
 # ── Pin apps to GNOME Dash ────────────────────────────────────────────────────
 # NOTE: This replaces the entire favorites list.
