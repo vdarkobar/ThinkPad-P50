@@ -36,7 +36,7 @@
   <br><br>
 </p>
   
-### Windows Autologon <a href="https://download.sysinternals.com/files/AutoLogon.zip">dssdsd</a> | <a href="https://github.com/vdarkobar/ThinkPad-P50/blob/main/AL.zip">*</a>
+### Windows Autologon <a href="https://download.sysinternals.com/files/AutoLogon.zip"> * </a> | <a href="https://github.com/vdarkobar/ThinkPad-P50/blob/main/AL.zip"> * </a>
 
 
 
