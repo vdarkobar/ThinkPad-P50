@@ -11,7 +11,7 @@ Lenovo  ThinkPad P50 Workstation setup and maintenance
 <details>
   <summary>Storage helper script Debian 13</summary>
   <p>Prepare storage on ThinkPad P50:</p>
-  <pre><code>tmp="$(mktemp)" && wget -qO "$tmp" "https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/main/sotrage-helper.sh" && bash "$tmp"; rc=$?; rm -f "$tmp"; (exit "$rc")</code></pre>
+  <pre><code>tmp="$(mktemp)" && wget -qO "$tmp" "https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/main/storage-helper.sh" && bash "$tmp"; rc=$?; rm -f "$tmp"; (exit "$rc")</code></pre>
 </details>
   
 <details>
