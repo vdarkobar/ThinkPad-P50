@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ── storage-helper.sh ────────────────────────────────────────────────────────
+# ── libvirt-vm-and-backup-storage-setup-debian13-v10.sh ───────────────────────
 # Debian 13/Trixie helper:
 #   - Lists all drives and marks the OS/system drive.
 #   - Lets you configure one extra drive for VM image storage.
@@ -957,7 +957,6 @@ verify_setup() {
     printf '\nDirectories:\n'
     ls -ld "$VM_POOL_DIR" 2>/dev/null || true
     ls -ld "$ISO_DIR" 2>/dev/null || true
-    ls -ld "$TIMESHIFT_HINT_DIR" 2>/dev/null || true
 }
 
 # ── Main flow ─────────────────────────────────────────────────────────────────
