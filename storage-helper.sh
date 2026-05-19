@@ -215,22 +215,38 @@ ensure_user_groups() {
 # ── Drive discovery ───────────────────────────────────────────────────────────
 get_parent_disk() {
     local dev="$1"
-    local cur type pkname
+    local cur parent type pkname
 
     cur="$(readlink -f "$dev")"
+    [[ -b "$cur" ]] || return 1
 
+    # Preferred path: ask lsblk for the full ancestor chain and pick the
+    # physical parent disk. This is more reliable than PKNAME alone on NVMe,
+    # LUKS, LVM, and other mapped-device layouts.
+    parent="$(lsblk -spnr -o NAME,TYPE "$cur" 2>/dev/null | awk '$2 == "disk" { print $1; exit }')"
+    if [[ -n "$parent" && -b "$parent" ]]; then
+        readlink -f "$parent"
+        return 0
+    fi
+
+    # Fallback: walk PKNAME manually. Keep this for older/quirky lsblk output.
     for _ in {1..20}; do
-        type="$(lsblk -dnro TYPE "$cur" 2>/dev/null || true)"
+        type="$(lsblk -nro TYPE "$cur" 2>/dev/null | head -n1 || true)"
 
         if [[ "$type" == "disk" ]]; then
             printf '%s\n' "$cur"
             return 0
         fi
 
-        pkname="$(lsblk -no PKNAME "$cur" 2>/dev/null | head -n1 || true)"
-        [[ -n "$pkname" ]] || return 1
+        pkname="$(lsblk -no PKNAME "$cur" 2>/dev/null | awk 'NF { print $1; exit }')"
+        [[ -n "$pkname" ]] || break
 
-        cur="/dev/$pkname"
+        if [[ "$pkname" == /dev/* ]]; then
+            cur="$pkname"
+        else
+            cur="/dev/$pkname"
+        fi
+
         cur="$(readlink -f "$cur")"
     done
 
@@ -974,7 +990,19 @@ main() {
     ensure_libvirt_service
     ensure_user_groups
 
-    root_disk="$(get_root_disk)" || die "Could not detect the OS/root disk."
+    if ! root_disk="$(get_root_disk)"; then
+        local root_src=""
+        root_src="$(findmnt -no SOURCE / 2>/dev/null || true)"
+        warn "Root source reported by findmnt: ${root_src:-unknown}"
+
+        root_src="${root_src%%\[*}"
+        if [[ -n "$root_src" && -b "$root_src" ]]; then
+            warn "Root block-device hierarchy seen by lsblk:"
+            lsblk -spno NAME,TYPE,FSTYPE,SIZE,MOUNTPOINTS "$root_src" >&2 || true
+        fi
+
+        die "Could not detect the OS/root disk."
+    fi
 
     print_drive_inventory "$root_disk"
 
