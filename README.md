@@ -28,7 +28,7 @@
   
   
   
-# Windows Guest tools
+*Windows Guest tools*
   
 <p align="center">
   <b>Download:</b><br>
