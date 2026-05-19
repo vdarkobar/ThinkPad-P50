@@ -1016,7 +1016,7 @@ else
     fi
 
     # Enable AppIndicator / KStatusNotifierItem support extension.
-    APPINDICATOR_UUID="ubuntu-appindicators@ubuntu.com"
+    APPINDICATOR_UUID="appindicatorsupport@rgcjonas.gmail.com"
 
     if gsettings_has_schema org.gnome.shell && gsettings_has_key org.gnome.shell enabled-extensions; then
         ENABLED_EXTENSIONS="$(gsettings get org.gnome.shell enabled-extensions)"
