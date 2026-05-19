@@ -37,7 +37,7 @@
 </p>
 
 
-<b>Download: <a href="https://docs.fedoraproject.org/en-US/quick-docs/creating-windows-virtual-machines-using-virtio-drivers/index.html#virtio-win-direct-downloads">VirtIO drivers</a> > <a href="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso">Stable</a> | <a href="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso">Latest</a>, *Autologon* <a href="https://download.sysinternals.com/files/AutoLogon.zip"> Autologon </a> <a href="https://github.com/vdarkobar/ThinkPad-P50/blob/main/AL.zip"> * </a>
+<b>Download: <a href="https://docs.fedoraproject.org/en-US/quick-docs/creating-windows-virtual-machines-using-virtio-drivers/index.html#virtio-win-direct-downloads">VirtIO drivers</a> > <a href="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso">Stable</a> | <a href="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso">Latest</a>, <a href="https://download.sysinternals.com/files/AutoLogon.zip"> Autologon </a> <a href="https://github.com/vdarkobar/ThinkPad-P50/blob/main/AL.zip"> * </a>
 
 
 
