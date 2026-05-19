@@ -32,7 +32,6 @@
   
 <p align="center">
   <b>Download:</b><br>
-<a href="https://github.com/vdarkobar/cloud/blob/main/misc/windows.md">Windows</a> |
 <a href="https://docs.fedoraproject.org/en-US/quick-docs/creating-windows-virtual-machines-using-virtio-drivers/index.html#virtio-win-direct-downloads">VirtIO drivers</a> >
 <a href="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso">Stable</a> |
 <a href="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso">Latest</a>
