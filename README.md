@@ -1,5 +1,5 @@
 # ThinkPad-P50
-Lenovo  ThinkPad P50 Workstation setup and maintenance, Debian 13 Trixie
+*Lenovo  ThinkPad P50 Workstation setup and maintenance, Debian 13 Trixie*
   
   
 <details>
