@@ -35,34 +35,9 @@
 <a href="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso">Latest</a>
   <br><br>
 </p>
+  
+### Windows Autologon <a href="https://download.sysinternals.com/files/AutoLogon.zip">*</a> | <a href="https://github.com/vdarkobar/ThinkPad-P50/blob/main/AL.zip">*</a>
 
-### Windows Autologon
-
-Find the correct values:
-```
-whoami
-hostname
-```
-Then use:
-```
-Username: <username>
-Domain:   <computer-name>
-Password: <account-password>
-```
-Run Command Prompt as Administrator:
-```
-reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 1 /f
-reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d "<username>" /f
-reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultDomainName /t REG_SZ /d "<computer-name>" /f
-reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /t REG_SZ /d "<account-password>" /f
-```
-Verify:
-```
-reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon
-reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName
-reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultDomainName
-reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword
-```
 
 
 
