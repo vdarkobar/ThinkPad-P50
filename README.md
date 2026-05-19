@@ -4,13 +4,13 @@
   
 <details>
   <summary>Post-install</summary>
-  <p>Run on a clean Debian installation:</p>
+  <p>Run on a clean Debian 13 installation:</p>
   <pre><code>tmp="$(mktemp)" && wget -qO "$tmp" "https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/main/post-install-deb.sh" && bash "$tmp"; rc=$?; rm -f "$tmp"; (exit "$rc")</code></pre>
 </details>
   
 <details>
   <summary>Storage helper</summary>
-  <p>Prepare storage on ThinkPad P50:</p>
+  <p>Prepare storage on ThinkPad P50 (2 x nvme drives, 1 x ssd):</p>
   <pre><code>tmp="$(mktemp)" && wget -qO "$tmp" "https://raw.githubusercontent.com/vdarkobar/ThinkPad-P50/main/storage-helper.sh" && bash "$tmp"; rc=$?; rm -f "$tmp"; (exit "$rc")</code></pre>
 </details>
   
