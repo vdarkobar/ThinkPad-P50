@@ -19,8 +19,19 @@
 set -Eeuo pipefail
 trap 'printf "\nERROR at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
+# All mktemp files are registered in TMPFILES and removed on EXIT,
+# including error paths (die / ERR-trap exits).
+TMPFILES=()
+cleanup_tmpfiles() {
+    ((${#TMPFILES[@]} == 0)) || rm -f "${TMPFILES[@]}"
+}
+trap cleanup_tmpfiles EXIT
+
 # ── Config ────────────────────────────────────────────────────────────────────
-# Version: direct-gsettings-v3 — direct GNOME settings, pipefail-safe checks, no Nautilus APT package.
+# Version: direct-gsettings-v4 — audit-fix round: APT-source backups relocated,
+# non-free packages split into a soft-failing install, SIGPIPE-safe pipelines,
+# EXIT-trap tmpfile cleanup, disabled-extensions handling, purge of conflicting
+# power managers, idempotent LibreWolf overrides.
 TZ="Europe/Berlin"
 LOCALE="en_US.UTF-8"
 FULL_UPGRADE=1              # 0 = apt upgrade only; 1 = apt full-upgrade
@@ -42,6 +53,8 @@ FLATPAK_APPS=(
 
 # APT packages
 # ca-certificates, wget, and gpg are installed earlier as repository prerequisites.
+# Packages requiring contrib/non-free live in NONFREE_PACKAGES below so a
+# missing component cannot abort the whole base package transaction.
 BASE_PACKAGES=(
     timeshift
     curl
@@ -67,7 +80,6 @@ BASE_PACKAGES=(
     qemu-kvm
     libvirt-daemon-system
     libvirt-clients
-    bridge-utils
     virtinst
     virt-manager
     qemu-system
@@ -90,14 +102,20 @@ BASE_PACKAGES=(
     gnome-firmware
     upower
     power-profiles-daemon
-    firmware-linux-nonfree
-    intel-microcode
     plocate
     seahorse
     pavucontrol
     needrestart
     tealdeer             # provides the tldr command on Debian 13/Trixie
     apparmor-utils
+)
+
+# Packages from contrib/non-free/non-free-firmware.
+# Installed in a separate, soft-failing transaction: if enabling the components
+# failed, only these are skipped instead of aborting the whole script.
+NONFREE_PACKAGES=(
+    firmware-linux-nonfree
+    intel-microcode
 )
 
 # APT should not stop for conffile prompts or package frontends.
@@ -111,11 +129,29 @@ DEB822_SRC="/etc/apt/sources.list.d/debian.sources"
 LEGACY_SRC="/etc/apt/sources.list"
 MS_KEY_FINGERPRINT="BC528686B50D79E339D3721CEB3E94ADBE1229CF"
 
+# Backups of APT source files must NOT live inside /etc/apt/sources.list.d/.
+# APT scans that directory and prints "invalid filename extension" notices on
+# every run for anything that is not *.list / *.sources.
+BACKUP_DIR="/var/backups/post-install-debian13/apt-sources"
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { printf '\n\e[1;34m──\e[0m %s\n' "$*"; }
 success() { printf '\e[1;32m✓\e[0m %s\n' "$*"; }
 warn()    { printf '\e[1;33m!\e[0m %s\n' "$*"; }
 die()     { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# new_tmpfile VARNAME — create a tmpfile, register it for EXIT cleanup, and
+# assign its path to VARNAME. A command-substitution wrapper would lose the
+# TMPFILES+=() append to a subshell, hence the nameref.
+new_tmpfile() {
+    local -n _new_tmpfile_ref="$1"
+    _new_tmpfile_ref="$(mktemp)"
+    TMPFILES+=("$_new_tmpfile_ref")
+}
+
+ensure_backup_dir() {
+    sudo install -d -o root -g root -m 0755 "$BACKUP_DIR"
+}
 
 apt_update() {
     sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
@@ -126,23 +162,27 @@ apt_run() {
 }
 
 remove_power_profile_conflicts() {
-    local pkg
+    local pkg status
     local conflicts=()
 
     for pkg in tlp tlp-rdw tuned tuned-utils; do
-        if dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii '; then
+        # Capture first, then test — no `... | grep -q` pipeline.
+        status="$(dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null || true)"
+        if [[ "$status" == ii* ]]; then
             conflicts+=("$pkg")
         fi
     done
 
     if ((${#conflicts[@]})); then
         info "Removing conflicting power profile managers"
-        warn "Removing packages that conflict with power-profiles-daemon: ${conflicts[*]}"
+        warn "Purging packages that conflict with power-profiles-daemon: ${conflicts[*]}"
 
-        if apt_run remove -y "${conflicts[@]}"; then
-            success "Conflicting power profile managers removed"
+        # purge, not remove: stale TLP/tuned conffiles could silently
+        # reactivate divergent power behavior on a later reinstall.
+        if apt_run purge -y "${conflicts[@]}"; then
+            success "Conflicting power profile managers purged"
         else
-            warn "Could not remove conflicting power profile managers — base package install may fail"
+            warn "Could not purge conflicting power profile managers — base package install may fail"
         fi
     fi
 }
@@ -150,9 +190,12 @@ remove_power_profile_conflicts() {
 gsettings_has_schema() {
     local schema="$1"
 
-    # Do not use grep -q here. With set -o pipefail, grep -q can close the pipe
-    # early after a match, causing gsettings to receive SIGPIPE and making the
-    # whole pipeline look like a false negative.
+    # Do not use `... | grep -q` here. With set -o pipefail, grep -q exits at
+    # the first match and closes the pipe; `gsettings list-schemas` prints
+    # hundreds of lines, so the writer can realistically die of SIGPIPE and
+    # make the pipeline look like a false negative. awk reads to EOF.
+    # Elsewhere in this script, command output is captured into a variable
+    # first and grep runs on the variable, which avoids the pipe entirely.
     gsettings list-schemas 2>/dev/null | awk -v wanted="$schema" '
         $0 == wanted { found = 1 }
         END { exit found ? 0 : 1 }
@@ -197,12 +240,68 @@ gset_path() {
     fi
 }
 
+# enable_shell_extension UUID LABEL
+# Removes UUID from org.gnome.shell disabled-extensions (appending to
+# enabled-extensions alone does NOT activate an extension that was ever
+# toggled off), then appends it to enabled-extensions if absent.
+# Pure gsettings on purpose: `gnome-extensions enable` asks the running shell,
+# which does not know about freshly dpkg-installed extensions until reload.
+enable_shell_extension() {
+    local uuid="$1"
+    local label="$2"
+    local enabled disabled
+
+    if ! gsettings_has_schema org.gnome.shell || ! gsettings_has_key org.gnome.shell enabled-extensions; then
+        warn "GNOME Shell extension setting missing — skipping $label enablement"
+        return 0
+    fi
+
+    if gsettings_has_key org.gnome.shell disabled-extensions; then
+        disabled="$(gsettings get org.gnome.shell disabled-extensions)"
+
+        if [[ "$disabled" == *"'$uuid'"* ]]; then
+            # Remove from the GVariant string list: middle/last element,
+            # first element, sole element — in that order.
+            disabled="${disabled//", '$uuid'"/}"
+            disabled="${disabled//"'$uuid', "/}"
+            disabled="${disabled//"['$uuid']"/"[]"}"
+
+            if gsettings set org.gnome.shell disabled-extensions "$disabled"; then
+                warn "$label removed from disabled-extensions"
+            else
+                warn "Could not remove $label from disabled-extensions"
+            fi
+        fi
+    fi
+
+    enabled="$(gsettings get org.gnome.shell enabled-extensions)"
+
+    if [[ "$enabled" == *"'$uuid'"* ]]; then
+        success "$label already enabled"
+    elif [[ "$enabled" == "@as []" || "$enabled" == "[]" ]]; then
+        if gsettings set org.gnome.shell enabled-extensions "['$uuid']"; then
+            success "$label enabled"
+        else
+            warn "Could not enable $label"
+        fi
+    else
+        if gsettings set org.gnome.shell enabled-extensions "${enabled%]}, '$uuid']"; then
+            success "$label enabled"
+        else
+            warn "Could not enable $label"
+        fi
+    fi
+}
+
 enable_contrib_nonfree_deb822() {
     [[ -f "$DEB822_SRC" ]] || return 1
 
     local tmp rc
-    tmp="$(mktemp)"
+    new_tmpfile tmp
 
+    # Note: stanzas listing only "main" (without non-free-firmware) are
+    # intentionally left untouched — the guard below requires both main and
+    # non-free-firmware, matching the installer-generated Trixie layout.
     if awk '
 function has(a, n, v, i) {
     for (i = 1; i <= n; i++) if (a[i] == v) return 1
@@ -242,17 +341,15 @@ END {
 
     case "$rc" in
         0)
-            sudo cp -a "$DEB822_SRC" "${DEB822_SRC}.bak.$(date +%Y%m%d-%H%M%S)"
+            ensure_backup_dir
+            sudo cp -a "$DEB822_SRC" "$BACKUP_DIR/debian.sources.$(date +%Y%m%d-%H%M%S).bak"
             sudo install -o root -g root -m 0644 "$tmp" "$DEB822_SRC"
-            rm -f "$tmp"
             return 0
             ;;
         1)
-            rm -f "$tmp"
             return 0
             ;;
         *)
-            rm -f "$tmp"
             return 1
             ;;
     esac
@@ -262,7 +359,7 @@ enable_contrib_nonfree_legacy() {
     [[ -f "$LEGACY_SRC" ]] || return 1
 
     local tmp rc
-    tmp="$(mktemp)"
+    new_tmpfile tmp
 
     if awk '
 function has_component(n, arr, want,    i) {
@@ -271,22 +368,26 @@ function has_component(n, arr, want,    i) {
     }
     return 0
 }
+# Re-emit the original components in their original order (unknown components
+# are preserved, not dropped), appending contrib/non-free only if missing.
 function emit_components(n, arr,    i, out) {
-    out = "main"
-    if (has_component(n, arr, "contrib")) out = out " contrib"
-    else out = out " contrib"
-    if (has_component(n, arr, "non-free")) out = out " non-free"
-    else out = out " non-free"
-    if (has_component(n, arr, "non-free-firmware")) out = out " non-free-firmware"
+    out = ""
+    for (i = 1; i <= n; i++) {
+        out = out (i == 1 ? "" : " ") arr[i]
+    }
+    if (!has_component(n, arr, "contrib"))  out = out " contrib"
+    if (!has_component(n, arr, "non-free")) out = out " non-free"
     return out
 }
 /^deb(-src)?[[:space:]]/ {
     # Legacy source lines are: deb [options] URI suite components...
     # Find the suite field after an optional [options] block, then tokenize components exactly.
-    split($0, f, /[[:space:]]+/)
+    # split() returns the field count — POSIX awk does not guarantee
+    # length(array), so do not rely on it.
+    nf = split($0, f, /[[:space:]]+/)
     suite_i = 3
     if (f[2] ~ /^\[/) {
-        for (i = 2; i <= length(f); i++) {
+        for (i = 2; i <= nf; i++) {
             if (f[i] ~ /\]$/) {
                 suite_i = i + 2
                 break
@@ -296,7 +397,7 @@ function emit_components(n, arr,    i, out) {
     comp_start = suite_i + 1
     n = 0
     delete comps
-    for (i = comp_start; i <= length(f); i++) {
+    for (i = comp_start; i <= nf; i++) {
         if (f[i] == "") continue
         comps[++n] = f[i]
     }
@@ -327,17 +428,15 @@ END {
 
     case "$rc" in
         0)
-            sudo cp -a "$LEGACY_SRC" "${LEGACY_SRC}.bak.$(date +%Y%m%d-%H%M%S)"
+            ensure_backup_dir
+            sudo cp -a "$LEGACY_SRC" "$BACKUP_DIR/sources.list.$(date +%Y%m%d-%H%M%S).bak"
             sudo install -o root -g root -m 0644 "$tmp" "$LEGACY_SRC"
-            rm -f "$tmp"
             return 0
             ;;
         1)
-            rm -f "$tmp"
             return 0
             ;;
         *)
-            rm -f "$tmp"
             return 1
             ;;
     esac
@@ -371,8 +470,8 @@ configure_vscode_repo() {
     info "Configuring Microsoft VS Code APT repository"
 
     local tmp_asc tmp_key got_fps
-    tmp_asc="$(mktemp)"
-    tmp_key="$(mktemp)"
+    new_tmpfile tmp_asc
+    new_tmpfile tmp_key
 
     wget -qO "$tmp_asc" https://packages.microsoft.com/keys/microsoft.asc
 
@@ -385,32 +484,31 @@ configure_vscode_repo() {
 
     gpg --dearmor < "$tmp_asc" > "$tmp_key"
     sudo install -D -o root -g root -m 0644 "$tmp_key" /usr/share/keyrings/microsoft.gpg
-    rm -f "$tmp_asc" "$tmp_key"
 
     # Keep backup copies outside /etc/apt/sources.list.d/.
     # APT scans that directory and warns about backup filenames with invalid extensions.
-    local backup_dir backup_stamp backup_file
-    backup_dir="/var/backups/post-install-debian13/apt-sources"
+    local backup_stamp backup_file
     backup_stamp="$(date +%Y%m%d-%H%M%S)"
-    sudo install -d -o root -g root -m 0755 "$backup_dir"
+    ensure_backup_dir
 
     for backup_file in \
         /etc/apt/sources.list.d/vscode.list.bak.* \
-        /etc/apt/sources.list.d/vscode.sources.bak.*; do
+        /etc/apt/sources.list.d/vscode.sources.bak.* \
+        /etc/apt/sources.list.d/debian.sources.bak.*; do
         [[ -e "$backup_file" ]] || continue
-        sudo mv "$backup_file" "$backup_dir/"
-        warn "Moved old VS Code source backup out of APT source directory: $(basename "$backup_file")"
+        sudo mv "$backup_file" "$BACKUP_DIR/"
+        warn "Moved old source backup out of APT source directory: $(basename "$backup_file")"
     done
 
     if [[ -f /etc/apt/sources.list.d/vscode.list ]]; then
         sudo mv /etc/apt/sources.list.d/vscode.list \
-            "$backup_dir/vscode.list.$backup_stamp.bak"
+            "$BACKUP_DIR/vscode.list.$backup_stamp.bak"
         warn "Backed up old vscode.list to avoid duplicate VS Code APT source"
     fi
 
     if [[ -f /etc/apt/sources.list.d/vscode.sources ]]; then
         sudo cp -a /etc/apt/sources.list.d/vscode.sources \
-            "$backup_dir/vscode.sources.$backup_stamp.bak"
+            "$BACKUP_DIR/vscode.sources.$backup_stamp.bak"
     fi
 
     sudo tee /etc/apt/sources.list.d/vscode.sources >/dev/null <<'EOFVS'
@@ -459,6 +557,13 @@ command -v awk >/dev/null 2>&1 || die "awk is missing."
 command -v wget >/dev/null 2>&1 || die "wget is missing."
 command -v gsettings >/dev/null 2>&1 || warn "gsettings not found yet; GNOME settings may fail until packages are installed."
 
+# Prompt for credentials up front: fail fast for users without sudo rights
+# instead of dying mid-run, and avoid a surprise password prompt later.
+info "Requesting sudo credentials"
+if ! sudo -v; then
+    die "Could not obtain sudo credentials for $USER."
+fi
+
 # ── APT sources: enable contrib/non-free ──────────────────────────────────────
 info "Checking APT sources"
 
@@ -466,7 +571,7 @@ if enable_contrib_nonfree_deb822 || enable_contrib_nonfree_legacy; then
     success "Confirmed contrib and non-free APT components"
 else
     warn "Could not enable contrib/non-free — neither Debian source file matched expected layout"
-    warn "Packages from contrib/non-free may fail to install, especially intel-microcode"
+    warn "Non-free packages (${NONFREE_PACKAGES[*]}) will be skipped if unavailable"
 fi
 
 # ── System update ─────────────────────────────────────────────────────────────
@@ -495,6 +600,16 @@ remove_power_profile_conflicts
 info "Installing base packages"
 apt_run install -y "${BASE_PACKAGES[@]}"
 success "Base packages installed"
+
+# Separate, soft-failing transaction: an unavailable non-free package must not
+# abort the entire script, only this step.
+info "Installing non-free packages (microcode, firmware)"
+if apt_run install -y "${NONFREE_PACKAGES[@]}"; then
+    success "Non-free packages installed"
+else
+    warn "Non-free package install failed — check that contrib/non-free components are enabled"
+    warn "Skipped: ${NONFREE_PACKAGES[*]}"
+fi
 
 # ── Virt-manager / libvirt setup ──────────────────────────────────────────────
 info "Configuring virt-manager/libvirt"
@@ -597,22 +712,29 @@ if ! command -v upower >/dev/null 2>&1; then
 elif ! command -v busctl >/dev/null 2>&1; then
     warn "busctl not found — skipping battery health charging threshold"
 else
-    BATTERY_PATH="$(upower -e 2>/dev/null | grep -m1 '/battery_' || true)"
+    # Capture command output before grep to avoid early-exit pipe behavior
+    # under pipefail (same rationale as gsettings_has_schema).
+    UPOWER_DEVICES="$(upower -e 2>/dev/null || true)"
+    BATTERY_PATH="$(grep -m1 '/battery_' <<<"$UPOWER_DEVICES" || true)"
 
     if [[ -z "$BATTERY_PATH" ]]; then
         warn "No UPower battery device found — skipping battery health charging threshold"
-    elif upower -i "$BATTERY_PATH" 2>/dev/null | grep -Eq 'charge-threshold-supported:[[:space:]]*yes'; then
-        if sudo busctl call org.freedesktop.UPower \
-            "$BATTERY_PATH" \
-            org.freedesktop.UPower.Device \
-            EnableChargeThreshold b true >/dev/null 2>&1; then
-            success "Battery health charging threshold enabled"
-            upower -i "$BATTERY_PATH" | grep -E 'charge-(start|end)-threshold|charge-threshold' || true
-        else
-            warn "Failed to enable battery health charging threshold via UPower"
-        fi
     else
-        warn "Battery health charging threshold not supported/reported by UPower on this device"
+        BATTERY_INFO="$(upower -i "$BATTERY_PATH" 2>/dev/null || true)"
+
+        if grep -Eq 'charge-threshold-supported:[[:space:]]*yes' <<<"$BATTERY_INFO"; then
+            if sudo busctl call org.freedesktop.UPower \
+                "$BATTERY_PATH" \
+                org.freedesktop.UPower.Device \
+                EnableChargeThreshold b true >/dev/null 2>&1; then
+                success "Battery health charging threshold enabled"
+                upower -i "$BATTERY_PATH" | grep -E 'charge-(start|end)-threshold|charge-threshold' || true
+            else
+                warn "Failed to enable battery health charging threshold via UPower"
+            fi
+        else
+            warn "Battery health charging threshold not supported/reported by UPower on this device"
+        fi
     fi
 fi
 
@@ -637,17 +759,22 @@ if ! command -v powerprofilesctl >/dev/null 2>&1; then
 fi
 
 profile_available() {
-    local profile="$1"
-    powerprofilesctl list 2>/dev/null | grep -Eq "^[*[:space:]]*${profile}:"
+    local profile="$1" listing
+
+    # Capture first, then grep — avoids grep -q closing a live pipe under pipefail.
+    listing="$(powerprofilesctl list 2>/dev/null || true)"
+    grep -Eq "^[*[:space:]]*${profile}:" <<<"$listing"
 }
 
 on_ac=0
 
+# Kernel power_supply "type" is "Mains" or "USB"; USB-PD variants are reported
+# in the separate "usb_type" attribute, not in "type".
 for ps in /sys/class/power_supply/*; do
     [[ -r "$ps/type" ]] || continue
 
     case "$(<"$ps/type")" in
-        Mains|USB|USB_C|USB_PD|USB_PD_DRP)
+        Mains|USB)
             if [[ -r "$ps/online" ]] && [[ "$(<"$ps/online")" == "1" ]]; then
                 on_ac=1
                 break
@@ -698,12 +825,11 @@ ExecStart=/usr/local/sbin/auto-power-profile
 WantedBy=multi-user.target
 EOFAPPSVC
 
+    # Only "Mains" and "USB" exist as power_supply type values; PD variants
+    # live in the usb_type attribute and would never match ATTR{type}.
     sudo tee /etc/udev/rules.d/90-auto-power-profile.rules >/dev/null <<'EOFAPPUDEV'
 SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="Mains", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
 SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
-SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB_C", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
-SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB_PD", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
-SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB_PD_DRP", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
 EOFAPPUDEV
 
     if sudo systemctl daemon-reload &&
@@ -773,12 +899,11 @@ if flatpak info --system io.gitlab.librewolf-community &>/dev/null; then
 
     mkdir -p "$LIBREWOLF_CFG_DIR"
 
-    if [[ -f "$LIBREWOLF_CFG" ]]; then
-        cp -a "$LIBREWOLF_CFG" "${LIBREWOLF_CFG}.bak.$(date +%Y%m%d-%H%M%S)"
-        warn "Existing LibreWolf overrides backed up"
-    fi
+    # Render to a tmpfile first so re-runs with identical content neither
+    # rewrite the file nor accumulate timestamped backups.
+    new_tmpfile LIBREWOLF_TMP
 
-    cat > "$LIBREWOLF_CFG" <<'EOFLW'
+    cat > "$LIBREWOLF_TMP" <<'EOFLW'
 // LibreWolf user overrides generated by post-install-debian13.sh
 
 // Enable Firefox Sync by default
@@ -839,8 +964,8 @@ defaultPref("network.cookie.lifetimePolicy", 0);
 defaultPref("privacy.clearOnShutdown.history", false);
 defaultPref("privacy.clearOnShutdown.downloads", false);
 
-// Preserve more session restore data
-// 0 = save all session data; 1 = save only first-party session data.
+// Session restore data scope:
+// 1 = save only first-party session data (0 would also save third-party data).
 defaultPref("browser.sessionstore.privacy_level", 1);
 
 // Enable middle-click autoscroll, but prevent middle-click paste by default
@@ -855,8 +980,17 @@ defaultPref("media.autoplay.blocking_policy", 2);
 // pref("webgl.disabled", false);
 EOFLW
 
-    chmod 0644 "$LIBREWOLF_CFG"
-    success "LibreWolf settings written to $LIBREWOLF_CFG"
+    if [[ -f "$LIBREWOLF_CFG" ]] && cmp -s "$LIBREWOLF_TMP" "$LIBREWOLF_CFG"; then
+        success "LibreWolf settings already up to date — no changes"
+    else
+        if [[ -f "$LIBREWOLF_CFG" ]]; then
+            cp -a "$LIBREWOLF_CFG" "${LIBREWOLF_CFG}.bak.$(date +%Y%m%d-%H%M%S)"
+            warn "Existing LibreWolf overrides backed up"
+        fi
+
+        install -m 0644 "$LIBREWOLF_TMP" "$LIBREWOLF_CFG"
+        success "LibreWolf settings written to $LIBREWOLF_CFG"
+    fi
 else
     warn "LibreWolf Flatpak not installed — skipping LibreWolf settings"
 fi
@@ -965,73 +1099,21 @@ else
         warn "GNOME Terminal schema not found — skipping terminal size setting"
     fi
 
-    # Enable Dash to Dock extension.
-    DASH_TO_DOCK_UUID="dash-to-dock@micxgx.gmail.com"
-
-    if gsettings_has_schema org.gnome.shell && gsettings_has_key org.gnome.shell enabled-extensions; then
-        ENABLED_EXTENSIONS="$(gsettings get org.gnome.shell enabled-extensions)"
-
-        if [[ "$ENABLED_EXTENSIONS" == *"'$DASH_TO_DOCK_UUID'"* ]]; then
-            success "Dash to Dock already enabled"
-        elif [[ "$ENABLED_EXTENSIONS" == "@as []" || "$ENABLED_EXTENSIONS" == "[]" ]]; then
-            gsettings set org.gnome.shell enabled-extensions "['$DASH_TO_DOCK_UUID']"
-            success "Dash to Dock enabled"
-        else
-            gsettings set org.gnome.shell enabled-extensions "${ENABLED_EXTENSIONS%]}, '$DASH_TO_DOCK_UUID']"
-            success "Dash to Dock enabled"
-        fi
-    else
-        warn "GNOME Shell extension setting missing — skipping Dash to Dock enablement"
-    fi
+    # Enable extensions. Handles disabled-extensions as well — appending to
+    # enabled-extensions alone never reactivates a previously disabled one.
+    enable_shell_extension "dash-to-dock@micxgx.gmail.com" "Dash to Dock"
+    enable_shell_extension "ubuntu-appindicators@ubuntu.com" "AppIndicator extension"
 
     # Dash to Dock appearance:
-    # icon size 32 px and shrink dock height around icons.
+    # icon size 32 px, shrink dock height around icons, "Shrink the dash".
+    # The Debian package installs its schema into /usr/share/glib-2.0/schemas/,
+    # so the normal compiled-schema path works — no --schemadir lookup needed.
     if gsettings_has_schema org.gnome.shell.extensions.dash-to-dock; then
         gset org.gnome.shell.extensions.dash-to-dock dash-max-icon-size 32
         gset org.gnome.shell.extensions.dash-to-dock extend-height false
+        gset org.gnome.shell.extensions.dash-to-dock custom-theme-shrink true
     else
         warn "Dash to Dock schema not found — skipping Dash to Dock appearance settings"
-    fi
-
-    # Dash to Dock appearance:
-    # Toggle only "Shrink the dash".
-    DASH_TO_DOCK_SCHEMA="org.gnome.shell.extensions.dash-to-dock"
-
-    DASH_TO_DOCK_SCHEMA_DIR="$(dpkg -L gnome-shell-extension-dashtodock 2>/dev/null \
-        | awk -v schema="$DASH_TO_DOCK_SCHEMA" '$0 ~ schema "\\.gschema\\.xml$" {
-            sub("/" schema "\\.gschema\\.xml$", "", $0)
-            print
-            exit
-        }')"
-
-    if [[ -n "$DASH_TO_DOCK_SCHEMA_DIR" ]]; then
-        if gsettings --schemadir "$DASH_TO_DOCK_SCHEMA_DIR" \
-            set "$DASH_TO_DOCK_SCHEMA" custom-theme-shrink true; then
-            success "Dash to Dock shrink setting enabled"
-        else
-            warn "Failed to set Dash to Dock shrink setting"
-        fi
-    else
-        warn "Dash to Dock schema not found — is gnome-shell-extension-dashtodock installed?"
-    fi
-
-    # Enable AppIndicator / KStatusNotifierItem support extension.
-    APPINDICATOR_UUID="ubuntu-appindicators@ubuntu.com"
-
-    if gsettings_has_schema org.gnome.shell && gsettings_has_key org.gnome.shell enabled-extensions; then
-        ENABLED_EXTENSIONS="$(gsettings get org.gnome.shell enabled-extensions)"
-
-        if [[ "$ENABLED_EXTENSIONS" == *"'$APPINDICATOR_UUID'"* ]]; then
-            success "AppIndicator extension already enabled"
-        elif [[ "$ENABLED_EXTENSIONS" == "@as []" || "$ENABLED_EXTENSIONS" == "[]" ]]; then
-            gsettings set org.gnome.shell enabled-extensions "['$APPINDICATOR_UUID']"
-            success "AppIndicator extension enabled"
-        else
-            gsettings set org.gnome.shell enabled-extensions "${ENABLED_EXTENSIONS%]}, '$APPINDICATOR_UUID']"
-            success "AppIndicator extension enabled"
-        fi
-    else
-        warn "GNOME Shell extension setting missing — skipping AppIndicator enablement"
     fi
 
     success "GNOME settings applied"
@@ -1100,6 +1182,7 @@ printf '  • Battery health charging threshold enabled if supported by hardware
 printf '  • Power profile: performance on AC, balanced on battery if supported.\n'
 printf '  • Power: no suspend on AC; suspend after 30 min on battery.\n'
 printf '  • Screen blank: direct GNOME global idle-delay set to 10 min.\n'
+printf '  • APT source backups: %s\n' "$BACKUP_DIR"
 printf '  • Open Timeshift and configure snapshots manually.\n'
 printf '  • You will be prompted to confirm reboot.\n'
 printf '  ────────────────────────────────────────\n'
