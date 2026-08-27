@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# ── post-install-deb.sh ───────────────────────────────────────────────────────
+# ── debian-post-install.sh ────────────────────────────────────────────────────
 # Debian 13 (Trixie) · GNOME desktop · post-install bootstrap
 #
-# Run from an active GNOME Terminal as your normal user.
-# Do NOT run this script with sudo.
+# Run from an active GNOME terminal session (Console or GNOME Terminal) as
+# your normal user. Do NOT run this script with sudo.
 #
 # Uses set -u intentionally; use ${VAR:-} for optional environment variables.
 #
@@ -11,34 +11,52 @@
 #   tmp="$(mktemp)" && wget -qO "$tmp" "<RAW_URL>" && bash "$tmp"; rc=$?; rm -f "$tmp"; (exit "$rc")
 #
 # Manual usage:
-#   chmod +x post-install-deb.sh
-#   ./post-install-deb.sh
+#   chmod +x debian-post-install.sh
+#   ./debian-post-install.sh
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -Eeuo pipefail
 trap 'printf "\nERROR at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
-# All mktemp files are registered in TMPFILES and removed on EXIT,
-# including error paths (die / ERR-trap exits).
+# EXIT handler: stops the sudo keepalive loop (started in Preflight) and
+# removes every mktemp file registered in TMPFILES — also on error paths
+# (die / ERR-trap exits).
 TMPFILES=()
-cleanup_tmpfiles() {
+SUDO_KEEPALIVE_PID=""
+cleanup() {
+    [[ -z "$SUDO_KEEPALIVE_PID" ]] || kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     ((${#TMPFILES[@]} == 0)) || rm -f "${TMPFILES[@]}"
 }
-trap cleanup_tmpfiles EXIT
+trap cleanup EXIT
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# Version: direct-gsettings-v4 — audit-fix round: APT-source backups relocated,
-# non-free packages split into a soft-failing install, SIGPIPE-safe pipelines,
-# EXIT-trap tmpfile cleanup, disabled-extensions handling, purge of conflicting
-# power managers, idempotent LibreWolf overrides.
-TZ="Europe/Berlin"
+# Version: direct-gsettings-v7 — VM test-run fixes:
+# kvm-ok looked up in /usr/sbin (was silently skipped: not on the session
+# PATH), libvirt net-start failure reason surfaced in the warn, Thunderbird
+# Flatpak ID org.mozilla.thunderbird_esr (Flathub rebase, May 2026) in both
+# the app list and the Dash favorites, locale.gen edits guarded against
+# duplicate active entries, VA-API check labelled "skipped (VM)" under a
+# hypervisor (systemd-detect-virt).
+# Previous (v6): udev RUN+= systemctl for AC/battery switching, sudo keepalive,
+# explicit failure handling in the APT-source rewriters, collision-free
+# subuid/subgid ranges, qemu-system-x86, fwupdmgr -y, vscode.sources rewritten
+# only on change, helpers consolidated, TZ renamed to TIMEZONE.
+# Previous (v5): multimedia codecs, mpv + Celluloid with VA-API hwdec, Intel
+# VA-API (iHD) with vainfo verification, AppImage support, SMB/NFS clients,
+# fwupd metadata refresh, Caffeine extension, Google Chrome Flatpak.
+# Previous (v4): APT-source backups relocated, non-free packages split into a
+# soft-failing install, SIGPIPE-safe pipelines, EXIT-trap tmpfile cleanup,
+# disabled-extensions handling, purge of conflicting power managers,
+# idempotent LibreWolf overrides.
+TIMEZONE="Europe/Berlin"
 LOCALE="en_US.UTF-8"
 FULL_UPGRADE=1              # 0 = apt upgrade only; 1 = apt full-upgrade
 
 # Flatpak apps to install from Flathub
 FLATPAK_APPS=(
     io.gitlab.librewolf-community
-    org.mozilla.Thunderbird
+    com.google.Chrome
+    org.mozilla.thunderbird_esr        # Flathub rebased org.mozilla.Thunderbird (ESR) to this ID in May 2026
     com.bitwarden.desktop
     com.mattjakeman.ExtensionManager
     io.missioncenter.MissionCenter
@@ -76,12 +94,30 @@ BASE_PACKAGES=(
     gnome-shell-extensions
     gnome-shell-extension-dashtodock
     gnome-shell-extension-appindicator
-    qemu-kvm
+    gnome-shell-extension-caffeine   # manual idle/suspend inhibit toggle in top bar
+    # Multimedia codecs — system-side playback, thumbnails, hardware-accel apps.
+    # Flatpak apps bundle their own; these cover native GNOME apps (Videos,
+    # Files thumbnailers) and anything else linked against system GStreamer/ffmpeg.
+    libavcodec-extra
+    gstreamer1.0-plugins-good
+    gstreamer1.0-plugins-bad
+    gstreamer1.0-plugins-ugly
+    gstreamer1.0-libav
+    mpv                  # media player; uses VA-API hwdec via the iHD driver below
+    celluloid            # GTK/GNOME frontend for mpv
+    vainfo               # VA-API verification (driver itself is in NONFREE_PACKAGES)
+    libfuse2t64          # AppImage runtime support (FUSE 2; renamed for time_t on Trixie)
+    cifs-utils           # SMB/CIFS share client (NAS, Unraid, Windows shares)
+    nfs-common           # NFS share client (Proxmox/NAS exports)
+    # qemu-system-x86 only: "qemu-kvm" is just a Provides alias of it since
+    # Debian 11, and "qemu-system" is the metapackage that pulls in every
+    # architecture's emulator (arm, mips, ppc, s390x, sparc, ...).
+    # Its Recommends bring the GUI/SPICE display modules and qemu-utils.
+    qemu-system-x86
     libvirt-daemon-system
     libvirt-clients
     virtinst
     virt-manager
-    qemu-system
     cpu-checker
     gnome-terminal
     gedit
@@ -115,6 +151,7 @@ BASE_PACKAGES=(
 NONFREE_PACKAGES=(
     firmware-linux-nonfree
     intel-microcode
+    intel-media-va-driver-non-free   # iHD VA-API driver: hardware video decode/encode on Intel iGPU (Gen8+)
 )
 
 # APT should not stop for conffile prompts or package frontends.
@@ -144,12 +181,44 @@ die()     { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 # TMPFILES+=() append to a subshell, hence the nameref.
 new_tmpfile() {
     local -n _new_tmpfile_ref="$1"
-    _new_tmpfile_ref="$(mktemp)"
+    # Explicit die: this helper is also called from functions that run as
+    # if/|| conditions, where set -e and the ERR trap are suspended.
+    _new_tmpfile_ref="$(mktemp)" || die "mktemp failed"
     TMPFILES+=("$_new_tmpfile_ref")
 }
 
 ensure_backup_dir() {
     sudo install -d -o root -g root -m 0755 "$BACKUP_DIR"
+}
+
+# next_subid_start FILE — print the first start value above every range
+# already allocated in /etc/subuid or /etc/subgid (100000 if none/missing).
+# usermod --add-subuids does not check other accounts' ranges; a hardcoded
+# start would overlap the range adduser hands out once uidmap is installed.
+next_subid_start() {
+    local file="$1"
+
+    # Readability guard instead of `|| echo`: gawk prints its END block and
+    # still exits 2 on a missing file, which would yield two numbers.
+    if [[ ! -r "$file" ]]; then
+        echo 100000
+        return 0
+    fi
+
+    awk -F: '
+        BEGIN { max = 100000 }
+        NF >= 3 { end = $2 + $3; if (end > max) max = end }
+        END { print max }
+    ' "$file"
+}
+
+systemd_unit_exists() {
+    local unit="$1"
+
+    systemctl list-unit-files "$unit" --no-legend 2>/dev/null | awk -v wanted="$unit" '
+        $1 == wanted { found = 1 }
+        END { exit found ? 0 : 1 }
+    '
 }
 
 apt_update() {
@@ -338,11 +407,16 @@ END {
         rc=$?
     fi
 
+    # This function runs as an `if ... ||` condition, which suspends set -e
+    # and the ERR trap for its whole body — every write below must fail
+    # explicitly, or a half-written sources file would be reported as success.
     case "$rc" in
         0)
-            ensure_backup_dir
-            sudo cp -a "$DEB822_SRC" "$BACKUP_DIR/debian.sources.$(date +%Y%m%d-%H%M%S).bak"
-            sudo install -o root -g root -m 0644 "$tmp" "$DEB822_SRC"
+            ensure_backup_dir || die "Cannot create $BACKUP_DIR"
+            sudo cp -a "$DEB822_SRC" "$BACKUP_DIR/debian.sources.$(date +%Y%m%d-%H%M%S).bak" \
+                || die "Backup of $DEB822_SRC failed"
+            sudo install -o root -g root -m 0644 "$tmp" "$DEB822_SRC" \
+                || die "Writing $DEB822_SRC failed"
             return 0
             ;;
         1)
@@ -425,11 +499,14 @@ END {
         rc=$?
     fi
 
+    # Same as the deb822 variant: runs as a condition, so fail explicitly.
     case "$rc" in
         0)
-            ensure_backup_dir
-            sudo cp -a "$LEGACY_SRC" "$BACKUP_DIR/sources.list.$(date +%Y%m%d-%H%M%S).bak"
-            sudo install -o root -g root -m 0644 "$tmp" "$LEGACY_SRC"
+            ensure_backup_dir || die "Cannot create $BACKUP_DIR"
+            sudo cp -a "$LEGACY_SRC" "$BACKUP_DIR/sources.list.$(date +%Y%m%d-%H%M%S).bak" \
+                || die "Backup of $LEGACY_SRC failed"
+            sudo install -o root -g root -m 0644 "$tmp" "$LEGACY_SRC" \
+                || die "Writing $LEGACY_SRC failed"
             return 0
             ;;
         1)
@@ -468,11 +545,15 @@ EOFNR
 configure_vscode_repo() {
     info "Configuring Microsoft VS Code APT repository"
 
-    local tmp_asc tmp_key got_fps
+    local tmp_asc tmp_key tmp_src got_fps
     new_tmpfile tmp_asc
     new_tmpfile tmp_key
+    new_tmpfile tmp_src
 
-    wget -qO "$tmp_asc" https://packages.microsoft.com/keys/microsoft.asc
+    # Bounded download with a clear message: this is the only step that
+    # depends on a third-party host, and everything after it is plain Debian.
+    wget --timeout=30 --tries=3 -qO "$tmp_asc" https://packages.microsoft.com/keys/microsoft.asc \
+        || die "Could not download the Microsoft signing key (packages.microsoft.com unreachable?)"
 
     got_fps="$(gpg --show-keys --with-colons "$tmp_asc" 2>/dev/null \
         | awk -F: '/^fpr:/ {print $10}')"
@@ -505,12 +586,9 @@ configure_vscode_repo() {
         warn "Backed up old vscode.list to avoid duplicate VS Code APT source"
     fi
 
-    if [[ -f /etc/apt/sources.list.d/vscode.sources ]]; then
-        sudo cp -a /etc/apt/sources.list.d/vscode.sources \
-            "$BACKUP_DIR/vscode.sources.$backup_stamp.bak"
-    fi
-
-    sudo tee /etc/apt/sources.list.d/vscode.sources >/dev/null <<'EOFVS'
+    # Render to a tmpfile and compare first, so re-runs with identical content
+    # neither rewrite the file nor accumulate timestamped backups.
+    cat > "$tmp_src" <<'EOFVS'
 Types: deb
 URIs: https://packages.microsoft.com/repos/code
 Suites: stable
@@ -519,6 +597,19 @@ Architectures: amd64,arm64
 Signed-By: /usr/share/keyrings/microsoft.gpg
 EOFVS
 
+    if [[ -f /etc/apt/sources.list.d/vscode.sources ]] \
+        && cmp -s "$tmp_src" /etc/apt/sources.list.d/vscode.sources; then
+        success "Microsoft VS Code APT repository already configured — no changes"
+        return 0
+    fi
+
+    if [[ -f /etc/apt/sources.list.d/vscode.sources ]]; then
+        sudo cp -a /etc/apt/sources.list.d/vscode.sources \
+            "$BACKUP_DIR/vscode.sources.$backup_stamp.bak"
+        warn "Existing vscode.sources backed up"
+    fi
+
+    sudo install -o root -g root -m 0644 "$tmp_src" /etc/apt/sources.list.d/vscode.sources
     success "Microsoft VS Code APT repository configured"
 }
 
@@ -530,13 +621,16 @@ ERROR: Do not run this script as root.
 Run it as your normal GNOME desktop user.
 
 Correct:
-  bash post-install-deb.sh
+  bash debian-post-install.sh
 
 Wrong:
-  sudo bash post-install-deb.sh
+  sudo bash debian-post-install.sh
 EOFROOT
     exit 1
 fi
+
+# USER is normally exported by the session, but not guaranteed (set -u).
+USER="${USER:-$(id -un)}"
 
 if [[ -r /etc/os-release ]]; then
     . /etc/os-release
@@ -546,6 +640,13 @@ fi
 
 [[ "${ID:-}" == "debian" ]] || die "This script is intended for Debian only."
 [[ "${VERSION_CODENAME:-}" == "trixie" ]] || die "This script is intended for Debian 13/Trixie only."
+
+# "none" on bare metal, otherwise the hypervisor (qemu, kvm, vmware, ...).
+# Used to label hardware-dependent checks that cannot pass inside a VM.
+# Note: systemd-detect-virt prints "none" AND exits non-zero on bare metal,
+# so the fallback must be outside the command substitution.
+VIRT_TYPE="$(systemd-detect-virt 2>/dev/null)" || VIRT_TYPE="none"
+[[ -n "$VIRT_TYPE" ]] || VIRT_TYPE="none"
 
 command -v sudo >/dev/null 2>&1 || die "sudo is missing."
 command -v apt-get >/dev/null 2>&1 || die "apt-get is missing. This script is intended for Debian."
@@ -560,6 +661,14 @@ if ! sudo -v; then
     die "Could not obtain sudo credentials for $USER."
 fi
 
+# Keep the sudo timestamp alive for the whole run. The default timeout is
+# 15 minutes; full-upgrade + base packages + Flatpaks routinely take longer,
+# and the run would otherwise stall at the next sudo call. The loop ends
+# with the script (kill -0 check) and is also killed by the EXIT handler.
+# `|| true` keeps the inherited ERR trap quiet if a refresh ever fails.
+( while kill -0 "$$" 2>/dev/null; do sudo -nv 2>/dev/null || true; sleep 60; done ) &
+SUDO_KEEPALIVE_PID=$!
+
 # ── APT sources: enable contrib/non-free ──────────────────────────────────────
 info "Checking APT sources"
 
@@ -571,13 +680,16 @@ else
 fi
 
 # ── System update ─────────────────────────────────────────────────────────────
+# Prompt policy first: apt-listchanges ships with every standard install and
+# could otherwise open a pager during the very first install transaction.
+configure_apt_prompt_policy
+
 info "Initial APT update"
 apt_update
 
 info "Installing repository prerequisites"
 apt_run install -y ca-certificates wget gpg
 
-configure_apt_prompt_policy
 configure_vscode_repo
 
 info "APT update with VS Code repository"
@@ -607,6 +719,61 @@ else
     warn "Skipped: ${NONFREE_PACKAGES[*]}"
 fi
 
+# ── VA-API hardware video acceleration check ──────────────────────────────────
+# Verifies the iHD driver actually initializes on this GPU. Informational only:
+# a warn here never aborts the run (e.g. driver skipped because non-free failed).
+info "Verifying VA-API hardware video acceleration"
+
+VAAPI_STATUS="unverified"
+
+if [[ "$VIRT_TYPE" != "none" ]]; then
+    VAAPI_STATUS="skipped (VM: $VIRT_TYPE)"
+    warn "Running in a $VIRT_TYPE VM — VA-API unavailable here; verify on bare metal"
+elif ! command -v vainfo >/dev/null 2>&1; then
+    warn "vainfo not found — skipping VA-API verification"
+else
+    # Capture first, then grep — same SIGPIPE/pipefail rationale as elsewhere.
+    VAINFO_OUTPUT="$(vainfo 2>&1 || true)"
+
+    if grep -q 'VAProfile' <<<"$VAINFO_OUTPUT"; then
+        VAAPI_DRIVER="$(grep -m1 -oE 'Driver version: .*' <<<"$VAINFO_OUTPUT" || true)"
+        VAAPI_STATUS="working${VAAPI_DRIVER:+ (${VAAPI_DRIVER})}"
+        success "VA-API initialized: ${VAAPI_DRIVER:-driver active}"
+    else
+        VAAPI_STATUS="not working"
+        warn "VA-API did not initialize — hardware video decode will fall back to CPU"
+        warn "Run 'vainfo' after reboot; first-boot sessions sometimes lack DRM render access"
+    fi
+fi
+
+# ── Firmware update metadata (LVFS) ───────────────────────────────────────────
+# Refresh-only by design: surfaces pending firmware in GNOME Firmware/Software.
+# Never auto-apply 'fwupdmgr update' in an unattended script — firmware flashes
+# need explicit operator consent and often a reboot into fwupd.
+info "Refreshing firmware update metadata (LVFS)"
+
+if ! command -v fwupdmgr >/dev/null 2>&1; then
+    warn "fwupdmgr not found — skipping firmware metadata refresh"
+else
+    # -y: stdout is discarded/captured here, so any question fwupdmgr asked
+    # would block invisibly on the tty.
+    if sudo fwupdmgr -y refresh --force >/dev/null 2>&1; then
+        success "Firmware metadata refreshed"
+
+        # Exit codes: 0 = updates available, 2 = none available — both are fine.
+        FWUPD_UPDATES="$(sudo fwupdmgr -y get-updates 2>/dev/null || true)"
+
+        if [[ -n "$FWUPD_UPDATES" ]] && grep -q 'New version' <<<"$FWUPD_UPDATES"; then
+            warn "Firmware updates are available — review and apply manually:"
+            warn "  sudo fwupdmgr update    (or use GNOME Firmware)"
+        else
+            success "No pending firmware updates reported"
+        fi
+    else
+        warn "Firmware metadata refresh failed — LVFS may be unreachable; continuing"
+    fi
+fi
+
 # ── Virt-manager / libvirt setup ──────────────────────────────────────────────
 info "Configuring virt-manager/libvirt"
 
@@ -622,15 +789,6 @@ for group_name in libvirt kvm; do
         warn "Group $group_name not found — libvirt/KVM package setup may be incomplete"
     fi
 done
-
-systemd_unit_exists() {
-    local unit="$1"
-
-    systemctl list-unit-files "$unit" --no-legend 2>/dev/null | awk -v wanted="$unit" '
-        $1 == wanted { found = 1 }
-        END { exit found ? 0 : 1 }
-    '
-}
 
 if systemd_unit_exists libvirtd.service; then
     if sudo systemctl enable --now libvirtd.service; then
@@ -660,25 +818,41 @@ fi
 if command -v virsh >/dev/null 2>&1; then
     if sudo virsh net-info default >/dev/null 2>&1; then
         sudo virsh net-autostart default >/dev/null 2>&1 || warn "Could not set libvirt default network to autostart"
-        sudo virsh net-start default >/dev/null 2>&1 || true
+
+        # Soft-failing, but keep the reason: `2>&1 >/dev/null` (in that order)
+        # captures stderr only. Newlines are folded for the one-line warn.
+        NET_START_ERR="$(sudo virsh net-start default 2>&1 >/dev/null || true)"
 
         if sudo virsh net-info default 2>/dev/null | awk -F': *' '$1 == "Active" && $2 == "yes" { found = 1 } END { exit found ? 0 : 1 }'; then
             success "libvirt default NAT network is active"
         else
-            warn "libvirt default NAT network exists but is not active"
+            warn "libvirt default NAT network exists but is not active${NET_START_ERR:+ — ${NET_START_ERR//$'\n'/ | }}"
         fi
     else
         warn "libvirt default NAT network not found — create/enable networking from virt-manager if needed"
     fi
 fi
 
-if command -v kvm-ok >/dev/null 2>&1; then
-    KVM_OK_OUTPUT="$(kvm-ok 2>&1 || true)"
+# kvm-ok lives in /usr/sbin, which is not on a normal user's session PATH —
+# a bare `command -v kvm-ok` silently skipped this whole check.
+KVM_OK_BIN=""
+for candidate in kvm-ok /usr/sbin/kvm-ok; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        KVM_OK_BIN="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$KVM_OK_BIN" ]]; then
+    warn "kvm-ok not found — skipping KVM check"
+else
+    KVM_OK_OUTPUT="$("$KVM_OK_BIN" 2>&1 || true)"
 
     if grep -q 'KVM acceleration can be used' <<<"$KVM_OK_OUTPUT"; then
         success "KVM acceleration available"
     else
         warn "kvm-ok did not confirm KVM acceleration"
+        [[ "$VIRT_TYPE" == "none" ]] || warn "Running in a $VIRT_TYPE VM — KVM inside a guest needs nested virtualization on the host"
         printf '%s\n' "$KVM_OK_OUTPUT" | sed 's/^/  /'
     fi
 fi
@@ -686,14 +860,19 @@ fi
 # ── Rootless Podman/Distrobox readiness ───────────────────────────────────────
 info "Checking rootless Podman/Distrobox setup"
 
-if ! grep -q "^${USER}:" /etc/subuid; then
-    sudo usermod --add-subuids 100000-165535 "$USER"
-    warn "Added subuid range for $USER"
+# 65536 IDs per range, starting above whatever is already allocated (see
+# next_subid_start). grep exits 2 on a missing file, which correctly counts
+# as "no entry".
+if ! grep -q "^${USER}:" /etc/subuid 2>/dev/null; then
+    SUBID_START="$(next_subid_start /etc/subuid)"
+    sudo usermod --add-subuids "${SUBID_START}-$((SUBID_START + 65535))" "$USER"
+    warn "Added subuid range ${SUBID_START}-$((SUBID_START + 65535)) for $USER"
 fi
 
-if ! grep -q "^${USER}:" /etc/subgid; then
-    sudo usermod --add-subgids 100000-165535 "$USER"
-    warn "Added subgid range for $USER"
+if ! grep -q "^${USER}:" /etc/subgid 2>/dev/null; then
+    SUBID_START="$(next_subid_start /etc/subgid)"
+    sudo usermod --add-subgids "${SUBID_START}-$((SUBID_START + 65535))" "$USER"
+    warn "Added subgid range ${SUBID_START}-$((SUBID_START + 65535)) for $USER"
 fi
 
 success "Rootless Podman/Distrobox prerequisites checked"
@@ -823,9 +1002,16 @@ EOFAPPSVC
 
     # Only "Mains" and "USB" exist as power_supply type values; PD variants
     # live in the usb_type attribute and would never match ATTR{type}.
+    #
+    # RUN+= systemctl, not TAG+="systemd"/ENV{SYSTEMD_WANTS}: systemd acts on
+    # SYSTEMD_WANTS only when a device unit first becomes active, and the AC
+    # adapter's unit is active from coldplug onward — plug/unplug "change"
+    # events would never restart the service (systemd.device(5)).
+    # --no-block is required: udev kills RUN programs that linger, and the
+    # oneshot service is idempotent (current == target is a no-op).
     sudo tee /etc/udev/rules.d/90-auto-power-profile.rules >/dev/null <<'EOFAPPUDEV'
-SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="Mains", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
-SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auto-power-profile.service"
+SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="Mains", RUN+="/usr/bin/systemctl --no-block start auto-power-profile.service"
+SUBSYSTEM=="power_supply", ACTION=="change", ATTR{type}=="USB", RUN+="/usr/bin/systemctl --no-block start auto-power-profile.service"
 EOFAPPUDEV
 
     if sudo systemctl daemon-reload &&
@@ -841,15 +1027,17 @@ fi
 
 # ── Timezone & locale ─────────────────────────────────────────────────────────
 info "Timezone and locale"
-sudo timedatectl set-timezone "$TZ"
+sudo timedatectl set-timezone "$TIMEZONE"
 
-# Enable English and German UTF-8 locales.
-sudo sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-sudo sed -i 's/^# *de_DE.UTF-8 UTF-8/de_DE.UTF-8 UTF-8/' /etc/locale.gen
+# Enable English and German UTF-8 locales — only if no active entry exists:
+# the installer already appends its own line, and uncommenting the list entry
+# on top of it made locale-gen build en_US.UTF-8 twice on every run.
+grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen || sudo sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+grep -q '^de_DE.UTF-8 UTF-8' /etc/locale.gen || sudo sed -i 's/^# *de_DE.UTF-8 UTF-8/de_DE.UTF-8 UTF-8/' /etc/locale.gen
 sudo locale-gen
 sudo update-locale LANG="$LOCALE"
 
-success "Timezone: $TZ  Locale: $LOCALE"
+success "Timezone: $TIMEZONE  Locale: $LOCALE"
 
 # ── Flatpak ───────────────────────────────────────────────────────────────────
 info "Configuring Flatpak + Flathub"
@@ -900,7 +1088,7 @@ if flatpak info --system io.gitlab.librewolf-community &>/dev/null; then
     new_tmpfile LIBREWOLF_TMP
 
     cat > "$LIBREWOLF_TMP" <<'EOFLW'
-// LibreWolf user overrides generated by post-install-deb.sh
+// LibreWolf user overrides generated by debian-post-install.sh
 
 // Enable Firefox Sync by default
 // Use defaultPref for soft preferences so GUI changes remain possible.
@@ -954,7 +1142,6 @@ defaultPref("privacy.clearOnShutdown_v2.cookiesAndStorage", false);
 defaultPref("privacy.clearOnShutdown.cookies", false);
 defaultPref("privacy.clearOnShutdown.sessions", false);
 defaultPref("privacy.clearOnShutdown.offlineApps", false);
-defaultPref("network.cookie.lifetimePolicy", 0);
 
 // Preserve browsing and download history by default
 defaultPref("privacy.clearOnShutdown.history", false);
@@ -989,6 +1176,37 @@ EOFLW
     fi
 else
     warn "LibreWolf Flatpak not installed — skipping LibreWolf settings"
+fi
+
+# ── mpv configuration ─────────────────────────────────────────────────────────
+# Enable hardware video decode: mpv defaults to software decoding. auto-safe
+# picks VA-API via the iHD driver and falls back to software cleanly if the
+# driver is missing. Celluloid reads the same ~/.config/mpv/mpv.conf.
+# Create-if-absent only — never overwrite an existing user config.
+info "Configuring mpv"
+
+MPV_CFG_DIR="$HOME/.config/mpv"
+MPV_CFG="$MPV_CFG_DIR/mpv.conf"
+
+if [[ -f "$MPV_CFG" ]]; then
+    warn "mpv config already exists — leaving $MPV_CFG untouched"
+else
+    mkdir -p "$MPV_CFG_DIR"
+
+    cat > "$MPV_CFG" <<'EOFMPV'
+# Generated by debian-post-install.sh — safe to edit or delete.
+
+# Hardware video decode (VA-API on Intel iGPU); falls back to software if unavailable.
+hwdec=auto-safe
+
+# GPU video output with sane defaults.
+vo=gpu
+
+# Resume playback position when reopening a file.
+save-position-on-quit=yes
+EOFMPV
+
+    success "mpv config written to $MPV_CFG"
 fi
 
 # ── .bashrc additions ─────────────────────────────────────────────────────────
@@ -1087,7 +1305,7 @@ else
         if [[ -n "$TERM_PROFILE" ]]; then
             TERM_SCHEMA="org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${TERM_PROFILE}/"
             gset_path "$TERM_SCHEMA" default-size-columns 120
-            gset_path "$TERM_SCHEMA" default-size-rows 31
+            gset_path "$TERM_SCHEMA" default-size-rows 33
         else
             warn "Could not detect GNOME Terminal profile — skipping terminal size setting"
         fi
@@ -1099,6 +1317,7 @@ else
     # enabled-extensions alone never reactivates a previously disabled one.
     enable_shell_extension "dash-to-dock@micxgx.gmail.com" "Dash to Dock"
     enable_shell_extension "ubuntu-appindicators@ubuntu.com" "AppIndicator extension"
+    enable_shell_extension "caffeine@patapon.info" "Caffeine"
 
     # Dash to Dock appearance:
     # icon size 32 px, shrink dock height around icons, "Shrink the dash".
@@ -1123,7 +1342,7 @@ if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
     DASH_FAVORITES="[
         'org.gnome.Nautilus.desktop',
         'io.gitlab.librewolf-community.desktop',
-        'org.mozilla.Thunderbird.desktop',
+        'org.mozilla.thunderbird_esr.desktop',
         'code.desktop',
         'org.gnome.Terminal.desktop',
         'org.gnome.gedit.desktop',
@@ -1165,9 +1384,10 @@ printf '\n'
 printf '  ────────────────────────────────────────\n'
 printf '  post-install complete\n'
 printf '  ────────────────────────────────────────\n'
-printf '  Timezone  : %s\n' "$TZ"
+printf '  Timezone  : %s\n' "$TIMEZONE"
 printf '  Flatpaks  : %d installed, %d skipped, %d failed\n' \
     "$FLATPAK_INSTALLED" "$FLATPAK_SKIPPED" "$FLATPAK_FAILED"
+printf '  VA-API    : %s\n' "$VAAPI_STATUS"
 printf '\n'
 printf '  Next steps:\n'
 printf '  • Log back in after reboot for .bashrc + GNOME changes to fully take effect\n'
@@ -1178,6 +1398,13 @@ printf '  • Battery health charging threshold enabled if supported by hardware
 printf '  • Power profile: performance on AC, balanced on battery if supported.\n'
 printf '  • Power: no suspend on AC; suspend after 30 min on battery.\n'
 printf '  • Screen blank: direct GNOME global idle-delay set to 10 min.\n'
+printf '  • Caffeine extension: coffee-cup icon in top bar toggles idle/suspend inhibit.\n'
+printf '  • Media players: mpv + Celluloid installed, VA-API hwdec enabled (~/.config/mpv/mpv.conf).\n'
+printf '  • Multimedia codecs + VA-API installed; verify after reboot with: vainfo\n'
+printf '  • AppImages: libfuse2t64 installed — mark AppImage executable and run.\n'
+printf '  • SMB/NFS clients installed (cifs-utils, nfs-common) — no mounts configured.\n'
+printf '  • Firmware: metadata refreshed; if updates were reported, apply via\n'
+printf '      sudo fwupdmgr update   (or GNOME Firmware)\n'
 printf '  • APT source backups: %s\n' "$BACKUP_DIR"
 printf '  • Open Timeshift and configure snapshots manually.\n'
 printf '  • You will be prompted to confirm reboot.\n'
